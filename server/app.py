@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import uvicorn
 from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 
-from models import GraderRequest, ResetRequest, StepRequest
+from models import (
+    CalendarAction,
+    CalendarObservation,
+    CalendarState,
+    GraderRequest,
+    ResetRequest,
+    StepRequest,
+)
 from server.environment import CalendarSchedulingEnvironment
 
 
 env = CalendarSchedulingEnvironment()
 app = FastAPI(title="Calendar Scheduling Environment", version="0.1.0")
+README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 
 
 @app.get("/")
@@ -21,6 +31,42 @@ def index() -> dict:
         "openenv": True,
         "endpoints": ["/health", "/tasks", "/reset", "/step", "/state", "/grader"],
     }
+
+
+@app.get("/metadata")
+def metadata() -> dict:
+    readme_content = README_PATH.read_text(encoding="utf-8") if README_PATH.exists() else None
+    return {
+        "name": "calendar-scheduling-env",
+        "description": "Deterministic calendar scheduling environment for OpenEnv agents.",
+        "version": app.version,
+        "readme_content": readme_content,
+    }
+
+
+@app.get("/schema")
+def schema() -> dict:
+    return {
+        "action": CalendarAction.model_json_schema(),
+        "observation": CalendarObservation.model_json_schema(),
+        "state": CalendarState.model_json_schema(),
+    }
+
+
+@app.post("/mcp")
+def mcp(payload: dict | None = Body(default=None)):
+    request_id = payload.get("id") if isinstance(payload, dict) else None
+    return JSONResponse(
+        status_code=200,
+        content={
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": -32601,
+                "message": "MCP is not implemented for this environment.",
+            },
+        },
+    )
 
 
 @app.get("/health")
