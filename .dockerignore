@@ -1,0 +1,12 @@
+.git
+.gitignore
+.pytest_cache
+.venv
+venv
+__pycache__
+server/__pycache__
+tests/__pycache__
+*.pyc
+dist
+build
+outputs

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "calendar-scheduling-env"
+version = "0.1.0"
+description = "A deterministic multi-step calendar scheduling environment for OpenEnv-style workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110,<1",
+  "openenv-core>=0.2.0,<1",
+  "openai>=2.7.2,<3",
+  "pydantic>=2.7,<3",
+  "requests>=2.31,<3",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<9",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.setuptools]
+packages = ["server"]
+py-modules = ["client", "inference", "models", "task_definitions"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

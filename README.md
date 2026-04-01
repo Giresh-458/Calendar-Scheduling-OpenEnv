@@ -1,10 +1,240 @@
 ---
-title: Calendar Scheduling Openenv
-emoji: 😻
-colorFrom: pink
-colorTo: purple
+title: Calendar Scheduling OpenEnv
+emoji: 📅
+colorFrom: blue
+colorTo: green
 sdk: docker
-pinned: false
+app_port: 8000
+short_description: OpenEnv calendar scheduling environment.
+tags:
+  - openenv
 ---
 
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+# Calendar Scheduling OpenEnv Environment
+
+This repository provides a deterministic OpenEnv-compatible calendar scheduling environment. It models a real workflow that operations assistants, executive assistants, recruiters, and project managers handle every day: placing meetings into constrained calendars while preserving existing commitments.
+
+The environment exposes a Gym-style interaction loop over HTTP:
+
+- `POST /reset`
+- `POST /step`
+- `GET /state`
+- `GET /tasks`
+- `POST /grader`
+- `GET /health`
+
+It includes three deterministic tasks:
+
+- `task_easy`: schedule one meeting in an empty calendar
+- `task_medium`: resolve a blocking meeting, then schedule the requested meeting
+- `task_hard`: coordinate two back-to-back meetings around existing events
+
+## Project Layout
+
+```text
+.
+|-- Dockerfile
+|-- README.md
+|-- client.py
+|-- inference.py
+|-- models.py
+|-- openenv.yaml
+|-- pyproject.toml
+|-- requirements.txt
+|-- task_definitions.py
+|-- uv.lock
+|-- tests/
+|   |-- test_environment.py
+|   `-- test_inference_policy.py
+`-- server/
+    |-- __init__.py
+    |-- app.py
+    `-- environment.py
+```
+
+## Quick Start
+
+### Local Python
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+### OpenEnv Validation
+
+```bash
+pip install openenv-core uv
+uv lock
+openenv validate
+```
+
+### Docker
+
+```bash
+docker build -t calendar-scheduling-env:latest .
+docker run --rm -p 8000:8000 calendar-scheduling-env:latest
+curl http://localhost:8000/health
+```
+
+Expected health response:
+
+```json
+{"status":"healthy","service":"calendar-scheduling-env"}
+```
+
+## Hugging Face Space Deployment
+
+1. Create a new Hugging Face Space and choose the `Docker` SDK.
+2. Push this repository to the Space repository root.
+3. Keep the root `README.md` and `Dockerfile` exactly at the repository root.
+4. In Space Settings, add secrets only if you want to run `inference.py` inside the Space:
+   `HF_TOKEN`, `MODEL_NAME`, and optionally `API_BASE_URL`.
+5. Wait for the build logs to finish, then verify:
+   `GET /health` and `POST /reset`.
+
+If you only want to host the environment server itself, no secret is required for the Space runtime.
+
+## Environment Model
+
+### Observation
+
+Each step returns a structured observation with:
+
+- current task metadata
+- requested meetings
+- the current calendar state
+- step count and max steps
+- last reward, current score, and feedback
+
+### Action
+
+Supported actions:
+
+- `schedule_event`
+- `cancel_event`
+- `noop`
+
+Example action payload:
+
+```json
+{
+  "episode_id": "your-episode-id",
+  "action": {
+    "action_type": "schedule_event",
+    "title": "Design Review",
+    "start_time": "2026-04-02T10:00:00Z",
+    "duration_hours": 1.0,
+    "participants": ["alex@example.com", "maya@example.com"]
+  }
+}
+```
+
+## Tasks
+
+### `task_easy`
+
+- Current time: `2026-04-01T09:00:00Z`
+- Goal: schedule a one-hour meeting tomorrow at `10:00`
+- Initial calendar: empty
+
+### `task_medium`
+
+- Goal: schedule a one-hour meeting tomorrow at `10:00`
+- Initial calendar: `"Team Sync"` already occupies `10:00-11:00`
+- Expected behavior: remove or move the blocker, then schedule the requested meeting
+
+### `task_hard`
+
+- Goal: place two back-to-back meetings at `10:00-11:00` and `11:00-12:00`
+- Initial calendar: existing meetings at `09:00-10:00` and `12:00-13:00`
+
+## Reward Shaping
+
+The environment uses dense rewards:
+
+- small step penalty on every action
+- positive reward when the current graded score improves
+- additional penalties for invalid actions and scheduling conflicts
+- completion bonus when a task reaches full score
+
+The deterministic grader always computes a final normalized score between `0.0` and `1.0`.
+
+## Endpoints
+
+### `GET /tasks`
+
+Returns the task catalog.
+
+### `POST /reset`
+
+Starts a new episode.
+
+Request:
+
+```json
+{
+  "task_id": "task_easy"
+}
+```
+
+### `POST /step`
+
+Applies one typed action to an existing episode.
+
+### `GET /state?episode_id=<id>`
+
+Returns the current internal episode state.
+
+### `POST /grader`
+
+Grades either:
+
+- a live episode by `episode_id`, or
+- an explicit `{task_id, events}` payload
+
+## Baseline Inference Script
+
+`inference.py` uses the OpenAI-compatible client and expects:
+
+- `API_BASE_URL`
+- `MODEL_NAME`
+- `HF_TOKEN`
+
+It evaluates all three tasks in order and prints one JSON summary containing per-task scores and the average score.
+
+For local reproducibility, the script defaults to an embedded in-process environment when `ENV_BASE_URL` is not set. If `ENV_BASE_URL` is provided, it will target the running HTTP server or deployed HF Space instead.
+
+Optional environment variables:
+
+- `ENV_BASE_URL` points to a running environment endpoint when you want remote execution
+- `TASK_IDS` can restrict evaluation to a comma-separated subset such as `task_easy,task_medium`
+- `MAX_AGENT_STEPS` defaults to `8`
+
+The script prompts the model to emit exactly one JSON action at a time and applies a deterministic safety policy so the baseline remains reproducible even when the model response is malformed or off-task.
+
+### Reference Baseline Scores
+
+With the embedded deterministic baseline policy, the environment reaches:
+
+- `task_easy`: `1.0`
+- `task_medium`: `1.0`
+- `task_hard`: `1.0`
+- average: `1.0`
+
+## Tests
+
+The test suite covers:
+
+- solving the easy task in one move
+- conflict handling for the medium task
+- partial credit on the hard task
+- full-score deterministic baseline planning across all three tasks
+
+Run:
+
+```bash
+pytest
+```
