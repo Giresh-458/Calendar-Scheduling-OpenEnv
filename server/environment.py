@@ -280,6 +280,16 @@ class CalendarSchedulingEnvironment:
             elif request_exact_matches[target.request_id]:
                 score = 0.5
 
+        preserved_initial_events = {
+            template.request_id: any(
+                self._template_matches_event(template, event) for event in events
+            )
+            for template in task.initial_events
+        }
+
+        if task.task_id == "task_hard" and score >= 1.0 and not all(preserved_initial_events.values()):
+            score = 0.75
+
         if conflicts_present:
             score = max(0.0, round(score - 0.25, 4))
 
@@ -288,6 +298,7 @@ class CalendarSchedulingEnvironment:
             "request_scores": request_scores,
             "conflicts_present": conflicts_present,
             "event_count": len(events),
+            "preserved_initial_events": preserved_initial_events,
         }
         return score, details
 
@@ -299,7 +310,7 @@ class CalendarSchedulingEnvironment:
         title_match = request.title.strip().casefold() == event.title.strip().casefold()
         participants_match = set(request.participants).issubset(set(event.participants))
 
-        if same_start and same_end and participants_match:
+        if same_start and same_end and title_match and participants_match:
             return 1.0
         if same_start and same_end and title_match:
             return 0.85
@@ -308,6 +319,14 @@ class CalendarSchedulingEnvironment:
         if same_day and (title_match or participants_match):
             return 0.25
         return 0.0
+
+    def _template_matches_event(self, template: MeetingTemplate, event: CalendarEvent) -> bool:
+        return (
+            template.title.strip().casefold() == event.title.strip().casefold()
+            and template.start_time == event.start_time
+            and template.end_time == event.end_time
+            and set(template.participants).issubset(set(event.participants))
+        )
 
     def _template_to_event(self, event_id: int, template: MeetingTemplate) -> CalendarEvent:
         return CalendarEvent(
