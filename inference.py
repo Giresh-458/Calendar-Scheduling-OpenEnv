@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from statistics import mean
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -13,6 +12,8 @@ from task_definitions import TASKS
 
 
 DEFAULT_API_BASE_URL = "https://router.huggingface.co/v1"
+DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"
+DEFAULT_BENCHMARK_NAME = "calendar_scheduling_env"
 TASK_ORDER = tuple(TASKS.keys())
 
 SYSTEM_PROMPT = """You are controlling a calendar scheduling environment.
@@ -35,6 +36,7 @@ def build_user_prompt(
     payload["suggested_safe_action"] = suggested_safe_action.model_dump(
         mode="json",
         exclude_none=True,
+        exclude_defaults=True,
     )
     return json.dumps(payload, indent=2)
 
@@ -111,44 +113,55 @@ def plan_next_action(observation: CalendarObservation) -> CalendarAction:
 
 
 def same_action(left: CalendarAction, right: CalendarAction) -> bool:
-    return left.model_dump(mode="json", exclude_none=True) == right.model_dump(
+    return left.model_dump(
         mode="json",
         exclude_none=True,
+        exclude_defaults=True,
+    ) == right.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude_defaults=True,
     )
 
 
-def build_env_client() -> tuple[Any, str]:
+def benchmark_name() -> str:
+    return os.getenv("BENCHMARK_NAME", DEFAULT_BENCHMARK_NAME)
+
+
+def success_score_threshold() -> float:
+    return float(os.getenv("SUCCESS_SCORE_THRESHOLD", "1.0"))
+
+
+def max_agent_steps() -> int:
+    return int(os.getenv("MAX_AGENT_STEPS", "8"))
+
+
+def build_env_client() -> Any:
     env_base_url = os.getenv("ENV_BASE_URL")
     if env_base_url:
-        return CalendarSchedulingEnvClient(base_url=env_base_url), f"http:{env_base_url}"
-    return EmbeddedCalendarSchedulingEnvClient(), "embedded"
+        return CalendarSchedulingEnvClient(base_url=env_base_url)
+    return EmbeddedCalendarSchedulingEnvClient()
 
 
-def build_model_client() -> tuple[Optional[OpenAI], Optional[str], bool]:
+def build_model_client() -> tuple[Optional[OpenAI], Optional[str]]:
     api_base_url = os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL)
-    model_name = os.getenv("MODEL_NAME")
+    model_name = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
     api_key = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
-    llm_enabled = bool(model_name and api_key)
 
-    if not llm_enabled:
-        return None, model_name, False
+    if not api_key:
+        return None, None
 
-    return OpenAI(base_url=api_base_url, api_key=api_key), model_name, True
+    return OpenAI(base_url=api_base_url, api_key=api_key), model_name
 
 
 def choose_action(
     observation: CalendarObservation,
     model_client: Optional[OpenAI],
     model_name: Optional[str],
-) -> tuple[CalendarAction, Dict[str, Any]]:
+) -> CalendarAction:
     policy_action = plan_next_action(observation)
-    trace: Dict[str, Any] = {
-        "policy_action": policy_action.model_dump(mode="json", exclude_none=True),
-        "selection": "policy",
-    }
-
     if model_client is None or not model_name:
-        return policy_action, trace
+        return policy_action
 
     try:
         response = model_client.chat.completions.create(
@@ -163,67 +176,20 @@ def choose_action(
             ],
         )
         content = response.choices[0].message.content or ""
-    except Exception as exc:
-        trace["selection"] = "policy_after_model_error"
-        trace["model_error"] = str(exc)
-        return policy_action, trace
+    except Exception:
+        return policy_action
 
-    trace["model_response"] = content
     model_action = parse_action(content)
     if model_action is None:
-        trace["selection"] = "policy_after_parse_failure"
-        return policy_action, trace
+        return policy_action
 
-    trace["model_action"] = model_action.model_dump(mode="json", exclude_none=True)
     if same_action(model_action, policy_action):
-        trace["selection"] = "model"
-        return model_action, trace
+        return model_action
 
     if policy_action.action_type != "noop":
-        trace["selection"] = "policy_guardrail"
-        return policy_action, trace
+        return policy_action
 
-    trace["selection"] = "model"
-    return model_action, trace
-
-
-def run_task(
-    env_client: Any,
-    model_client: Optional[OpenAI],
-    model_name: Optional[str],
-    task_id: str,
-    max_agent_steps: int,
-) -> Dict[str, Any]:
-    result = env_client.reset(task_id=task_id)
-    episode_id = result.episode_id
-    steps: List[Dict[str, Any]] = []
-
-    for _ in range(max_agent_steps):
-        if result.done:
-            break
-
-        action, trace = choose_action(result.observation, model_client, model_name)
-        result = env_client.step(episode_id, action)
-        steps.append(
-            {
-                "step": result.observation.step,
-                "executed_action": action.model_dump(mode="json", exclude_none=True),
-                "selection": trace["selection"],
-                "reward": result.reward,
-                "score": result.observation.score,
-                "done": result.done,
-            }
-        )
-
-    grade = env_client.grade(episode_id)
-    return {
-        "task_id": task_id,
-        "score": grade.score,
-        "passed": grade.passed,
-        "details": grade.details,
-        "steps_taken": len(steps),
-        "trajectory": steps,
-    }
+    return model_action
 
 
 def requested_task_ids() -> List[str]:
@@ -238,36 +204,134 @@ def requested_task_ids() -> List[str]:
     return task_ids
 
 
-def main() -> None:
-    max_agent_steps = int(os.getenv("MAX_AGENT_STEPS", "8"))
-    env_client, env_mode = build_env_client()
-    model_client, model_name, llm_enabled = build_model_client()
-    task_ids = requested_task_ids()
+def normalize_log_value(value: Optional[str]) -> str:
+    if not value:
+        return "null"
+    return " ".join(value.split())
+
+
+def action_to_log_string(action: CalendarAction) -> str:
+    return json.dumps(
+        action.model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude_defaults=True,
+        ),
+        separators=(",", ":"),
+    )
+
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(
+    step: int,
+    action: CalendarAction,
+    reward: float,
+    done: bool,
+    error: Optional[str],
+) -> None:
+    print(
+        "[STEP] "
+        f"step={step} "
+        f"action={action_to_log_string(action)} "
+        f"reward={reward:.2f} "
+        f"done={str(done).lower()} "
+        f"error={normalize_log_value(error)}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+def run_task(
+    env_client: Any,
+    model_client: Optional[OpenAI],
+    model_name: Optional[str],
+    task_id: str,
+) -> Dict[str, Any]:
+    rewards: List[float] = []
+    steps_taken = 0
+    success = False
+    score = 0.0
+    exception: Optional[BaseException] = None
+    episode_id: Optional[str] = None
+
+    log_start(
+        task=task_id,
+        env=benchmark_name(),
+        model=model_name or "deterministic-policy",
+    )
 
     try:
-        task_results = [
-            run_task(
+        result = env_client.reset(task_id=task_id)
+        episode_id = result.episode_id
+
+        for step_index in range(1, max_agent_steps() + 1):
+            if result.done:
+                break
+
+            action = choose_action(result.observation, model_client, model_name)
+            result = env_client.step(episode_id, action)
+
+            rewards.append(result.reward)
+            steps_taken = step_index
+            log_step(
+                step=step_index,
+                action=action,
+                reward=result.reward,
+                done=result.done,
+                error=result.observation.last_action_error,
+            )
+
+            if result.done:
+                break
+
+        if episode_id is not None:
+            grade = env_client.grade(episode_id)
+            score = grade.score
+            success = grade.score >= success_score_threshold()
+    except BaseException as exc:
+        exception = exc
+    finally:
+        log_end(success=success, steps=steps_taken, rewards=rewards)
+
+    return {
+        "task_id": task_id,
+        "score": score,
+        "success": success,
+        "steps_taken": steps_taken,
+        "exception": exception,
+    }
+
+
+def main() -> None:
+    env_client = build_env_client()
+    model_client, model_name = build_model_client()
+    first_exception: Optional[BaseException] = None
+
+    try:
+        for task_id in requested_task_ids():
+            result = run_task(
                 env_client=env_client,
                 model_client=model_client,
                 model_name=model_name,
                 task_id=task_id,
-                max_agent_steps=max_agent_steps,
             )
-            for task_id in task_ids
-        ]
-        average_score = round(mean(item["score"] for item in task_results), 4)
-        summary = {
-            "environment_mode": env_mode,
-            "llm_enabled": llm_enabled,
-            "model_name": model_name,
-            "task_count": len(task_results),
-            "scores": {item["task_id"]: item["score"] for item in task_results},
-            "average_score": average_score,
-            "results": task_results,
-        }
-        print(json.dumps(summary, indent=2))
+            if first_exception is None and result["exception"] is not None:
+                first_exception = result["exception"]
     finally:
         env_client.close()
+
+    if first_exception is not None:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -41,10 +41,14 @@ It includes three deterministic tasks:
 |-- openenv.yaml
 |-- pyproject.toml
 |-- requirements.txt
+|-- scripts/
+|   `-- validate-submission.sh
 |-- task_definitions.py
 |-- uv.lock
 |-- tests/
 |   |-- test_environment.py
+|   |-- test_grader_guards.py
+|   |-- test_inference_logging.py
 |   `-- test_inference_policy.py
 `-- server/
     |-- __init__.py
@@ -69,6 +73,12 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000
 pip install openenv-core uv
 uv lock
 openenv validate
+```
+
+Optional pre-submission validator:
+
+```bash
+bash scripts/validate-submission.sh https://your-space-name.hf.space .
 ```
 
 ### Docker
@@ -108,6 +118,8 @@ Each step returns a structured observation with:
 - the current calendar state
 - step count and max steps
 - last reward, current score, and feedback
+- `last_action_error` for rejected actions
+- `reward_breakdown` with typed reward components
 
 ### Action
 
@@ -158,9 +170,10 @@ The environment uses dense rewards:
 - small step penalty on every action
 - positive reward when the current graded score improves
 - additional penalties for invalid actions and scheduling conflicts
+- a destructive-action penalty when the agent cancels an event
 - completion bonus when a task reaches full score
 
-The deterministic grader always computes a final normalized score between `0.0` and `1.0`.
+The deterministic grader always computes a final normalized score between `0.0` and `1.0`. Each transition also exposes a typed `CalendarReward` breakdown so agents can learn from progress, mistakes, and destructive edits separately.
 
 ## Endpoints
 
@@ -203,7 +216,15 @@ Grades either:
 - `MODEL_NAME`
 - `HF_TOKEN`
 
-It evaluates all three tasks in order and prints one JSON summary containing per-task scores and the average score.
+It evaluates all three tasks in order and prints only the required structured stdout lines:
+
+```text
+[START] task=<task_id> env=<benchmark> model=<model_name>
+[STEP] step=<n> action=<json_action> reward=<0.00> done=<true|false> error=<msg|null>
+[END] success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
+```
+
+The script uses the OpenAI client whenever `HF_TOKEN` or `OPENAI_API_KEY` is set, but still applies a deterministic safety policy so baseline scores remain reproducible.
 
 For local reproducibility, the script defaults to an embedded in-process environment when `ENV_BASE_URL` is not set. If `ENV_BASE_URL` is provided, it will target the running HTTP server or deployed HF Space instead.
 
@@ -212,8 +233,14 @@ Optional environment variables:
 - `ENV_BASE_URL` points to a running environment endpoint when you want remote execution
 - `TASK_IDS` can restrict evaluation to a comma-separated subset such as `task_easy,task_medium`
 - `MAX_AGENT_STEPS` defaults to `8`
+- `BENCHMARK_NAME` overrides the benchmark label printed in the `[START]` line
+- `SUCCESS_SCORE_THRESHOLD` defaults to `1.0`
 
-The script prompts the model to emit exactly one JSON action at a time and applies a deterministic safety policy so the baseline remains reproducible even when the model response is malformed or off-task.
+Example local run:
+
+```bash
+python inference.py
+```
 
 ### Reference Baseline Scores
 
@@ -232,6 +259,7 @@ The test suite covers:
 - conflict handling for the medium task
 - partial credit on the hard task
 - full-score deterministic baseline planning across all three tasks
+- strict `[START]` / `[STEP]` / `[END]` logging for the submission script
 
 Run:
 

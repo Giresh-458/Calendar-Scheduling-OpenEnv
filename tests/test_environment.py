@@ -44,6 +44,8 @@ def test_medium_task_requires_conflict_resolution():
     )
     assert failed_attempt.observation.score == 0.0
     assert failed_attempt.reward < 0
+    assert failed_attempt.observation.last_action_error is not None
+    assert failed_attempt.observation.reward_breakdown.invalid_action_penalty < 0
 
     env.step(
         reset_result.episode_id,

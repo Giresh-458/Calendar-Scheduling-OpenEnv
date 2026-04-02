@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -11,6 +11,7 @@ from models import (
     CalendarAction,
     CalendarEvent,
     CalendarObservation,
+    CalendarReward,
     CalendarState,
     GraderResponse,
     MeetingRequest,
@@ -35,6 +36,17 @@ def overlaps(
     return first_start < second_end and second_start < first_end
 
 
+def zero_reward_breakdown() -> CalendarReward:
+    return CalendarReward(
+        total=0.0,
+        score_delta=0.0,
+        step_penalty=0.0,
+        invalid_action_penalty=0.0,
+        destructive_action_penalty=0.0,
+        completion_bonus=0.0,
+    )
+
+
 @dataclass
 class Episode:
     episode_id: str
@@ -49,6 +61,8 @@ class Episode:
     next_event_id: int = 1
     last_feedback: str = "Episode initialized."
     last_reward: float = 0.0
+    last_action_error: Optional[str] = None
+    last_reward_breakdown: CalendarReward = field(default_factory=zero_reward_breakdown)
 
 
 class CalendarSchedulingEnvironment:
@@ -94,7 +108,10 @@ class CalendarSchedulingEnvironment:
             observation=observation,
             reward=0.0,
             done=False,
-            info={"score": initial_score},
+            info={
+                "score": initial_score,
+                "reward_breakdown": episode.last_reward_breakdown.model_dump(mode="json"),
+            },
         )
 
     def step(self, episode_id: str, action: CalendarAction) -> StepResult:
@@ -106,37 +123,68 @@ class CalendarSchedulingEnvironment:
                 observation=observation,
                 reward=0.0,
                 done=True,
-                info={"score": episode.last_score, "message": "Episode already complete."},
+                info={
+                    "score": episode.last_score,
+                    "message": "Episode already complete.",
+                    "reward_breakdown": episode.last_reward_breakdown.model_dump(mode="json"),
+                },
             )
 
         reward_delta = -0.01
-        extra_penalty = 0.0
+        invalid_action_penalty = 0.0
+        destructive_action_penalty = 0.0
+        completion_bonus = 0.0
         feedback = ""
+        action_error = None
 
         if action.action_type == "noop":
             feedback = "No action taken."
         elif action.action_type == "schedule_event":
-            feedback, extra_penalty = self._handle_schedule(episode, action)
+            feedback, invalid_action_penalty = self._handle_schedule(episode, action)
         elif action.action_type == "cancel_event":
-            feedback, extra_penalty = self._handle_cancel(episode, action)
+            feedback, invalid_action_penalty = self._handle_cancel(episode, action)
+            if invalid_action_penalty == 0.0:
+                destructive_action_penalty = -0.05
+
+        if invalid_action_penalty < 0.0:
+            action_error = feedback
 
         episode.step_count += 1
+        previous_score = episode.last_score
         score, details = self._grade_events(episode.task, episode.events)
-        reward = (score - episode.last_score) + reward_delta + extra_penalty
+        score_delta = round(score - previous_score, 4)
+        reward = score_delta + reward_delta + invalid_action_penalty + destructive_action_penalty
 
         if score >= 1.0:
-            reward += 0.2
+            completion_bonus = 0.2
+            reward += completion_bonus
             episode.done = True
         elif episode.step_count >= episode.max_steps:
             episode.done = True
 
-        reward = round(max(-1.0, min(1.0, reward)), 4)
+        reward = round(reward, 4)
+        reward_breakdown = CalendarReward(
+            total=reward,
+            score_delta=score_delta,
+            step_penalty=reward_delta,
+            invalid_action_penalty=invalid_action_penalty,
+            destructive_action_penalty=destructive_action_penalty,
+            completion_bonus=completion_bonus,
+        )
         episode.cumulative_reward += reward
         episode.last_score = score
         episode.last_reward = reward
+        episode.last_action_error = action_error
+        episode.last_reward_breakdown = reward_breakdown
+        if action_error is None:
+            if score_delta > 0:
+                feedback = f"{feedback} Score improved to {score:.2f}."
+            else:
+                feedback = f"{feedback} Current score is {score:.2f}."
         episode.last_feedback = feedback
 
         observation = self._build_observation(episode)
+        details["reward_breakdown"] = reward_breakdown.model_dump(mode="json")
         return StepResult(
             episode_id=episode_id,
             observation=observation,
@@ -157,6 +205,9 @@ class CalendarSchedulingEnvironment:
             max_steps=episode.max_steps,
             cumulative_reward=round(episode.cumulative_reward, 4),
             last_score=episode.last_score,
+            last_reward=episode.last_reward,
+            last_action_error=episode.last_action_error,
+            last_reward_breakdown=episode.last_reward_breakdown,
             done=episode.done,
             created_at=episode.created_at,
             current_time=self._current_time_for_step(episode),
@@ -190,8 +241,10 @@ class CalendarSchedulingEnvironment:
             max_steps=episode.max_steps,
             done=episode.done,
             feedback=episode.last_feedback,
+            last_action_error=episode.last_action_error,
             score=episode.last_score,
             last_reward=episode.last_reward,
+            reward_breakdown=episode.last_reward_breakdown,
         )
 
     def _current_time_for_step(self, episode: Episode) -> datetime:

@@ -65,6 +65,24 @@ class CalendarAction(Action):
         return self
 
 
+class CalendarReward(BaseModel):
+    total: float = Field(..., description="Final scalar reward returned by the transition.")
+    score_delta: float = Field(..., description="Improvement in the normalized grader score.")
+    step_penalty: float = Field(..., description="Small cost applied to every action.")
+    invalid_action_penalty: float = Field(
+        ...,
+        description="Penalty applied when the action is invalid or creates a conflict.",
+    )
+    destructive_action_penalty: float = Field(
+        ...,
+        description="Penalty for canceling an event instead of preserving the calendar.",
+    )
+    completion_bonus: float = Field(
+        ...,
+        description="Bonus applied when the task reaches a perfect score.",
+    )
+
+
 class CalendarObservation(Observation):
     task_id: str = Field(..., description="Current task identifier.")
     task_name: str = Field(..., description="Short task name.")
@@ -79,8 +97,16 @@ class CalendarObservation(Observation):
     max_steps: int = Field(..., description="Maximum allowed steps for the episode.")
     done: bool = Field(..., description="Whether the episode has terminated.")
     feedback: str = Field(..., description="Short feedback message from the previous action.")
+    last_action_error: Optional[str] = Field(
+        None,
+        description="Raw error text from the last invalid or rejected action, if any.",
+    )
     score: float = Field(..., ge=0.0, le=1.0, description="Current deterministic graded score.")
     last_reward: float = Field(..., description="Reward returned by the previous transition.")
+    reward_breakdown: CalendarReward = Field(
+        ...,
+        description="Structured components that produced the previous scalar reward.",
+    )
     available_actions: List[str] = Field(
         default_factory=lambda: ["schedule_event", "cancel_event", "noop"],
         description="Action types supported by the environment.",
@@ -94,6 +120,15 @@ class CalendarState(State):
     max_steps: int = Field(..., description="Maximum steps for the episode.")
     cumulative_reward: float = Field(..., description="Total accumulated reward.")
     last_score: float = Field(..., ge=0.0, le=1.0, description="Most recent deterministic score.")
+    last_reward: float = Field(..., description="Most recent scalar reward.")
+    last_action_error: Optional[str] = Field(
+        None,
+        description="Raw error text from the last invalid or rejected action, if any.",
+    )
+    last_reward_breakdown: CalendarReward = Field(
+        ...,
+        description="Structured components that produced the previous scalar reward.",
+    )
     done: bool = Field(..., description="Whether the episode has ended.")
     created_at: datetime = Field(..., description="Episode creation time.")
     current_time: datetime = Field(..., description="Current environment time.")
