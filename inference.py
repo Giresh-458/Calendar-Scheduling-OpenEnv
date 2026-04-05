@@ -224,6 +224,27 @@ def normalize_log_value(value: Optional[str]) -> str:
     return value
 
 
+def format_bool(value: bool) -> str:
+    return str(value).lower()
+
+
+def format_reward(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def format_score(value: float) -> str:
+    return f"{value:.3f}"
+
+
+def format_rewards(values: List[float]) -> str:
+    return ",".join(format_reward(value) for value in values)
+
+
+def emit_log_line(prefix: str, fields: List[tuple[str, str]]) -> None:
+    payload = " ".join(f"{key}={value}" for key, value in fields)
+    print(f"{prefix} {payload}", flush=True)
+
+
 def action_to_log_string(action: CalendarAction) -> str:
     return json.dumps(
         action.model_dump(
@@ -236,7 +257,14 @@ def action_to_log_string(action: CalendarAction) -> str:
 
 
 def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
+    emit_log_line(
+        "[START]",
+        [
+            ("task", task),
+            ("env", env),
+            ("model", model),
+        ],
+    )
 
 
 def log_step(
@@ -246,26 +274,27 @@ def log_step(
     done: bool,
     error: Optional[str],
 ) -> None:
-    print(
-        "[STEP] "
-        f"step={step} "
-        f"action={action_to_log_string(action)} "
-        f"reward={reward:.2f} "
-        f"done={str(done).lower()} "
-        f"error={normalize_log_value(error)}",
-        flush=True,
+    emit_log_line(
+        "[STEP]",
+        [
+            ("step", str(step)),
+            ("action", action_to_log_string(action)),
+            ("reward", format_reward(reward)),
+            ("done", format_bool(done)),
+            ("error", normalize_log_value(error)),
+        ],
     )
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
-    print(
-        "[END] "
-        f"success={str(success).lower()} "
-        f"steps={steps} "
-        f"score={score:.3f} "
-        f"rewards={rewards_str}",
-        flush=True,
+    emit_log_line(
+        "[END]",
+        [
+            ("success", format_bool(success)),
+            ("steps", str(steps)),
+            ("score", format_score(score)),
+            ("rewards", format_rewards(rewards)),
+        ],
     )
 
 
