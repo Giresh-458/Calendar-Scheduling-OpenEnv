@@ -128,6 +128,22 @@ def benchmark_name() -> str:
     return os.getenv("BENCHMARK_NAME", DEFAULT_BENCHMARK_NAME)
 
 
+def configured_model_name() -> str:
+    return os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
+
+
+def configured_api_base_url() -> str:
+    return os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL)
+
+
+def configured_hf_token() -> Optional[str]:
+    return os.getenv("HF_TOKEN")
+
+
+def configured_local_image_name() -> Optional[str]:
+    return os.getenv("LOCAL_IMAGE_NAME")
+
+
 def success_score_threshold() -> float:
     return float(os.getenv("SUCCESS_SCORE_THRESHOLD", "1.0"))
 
@@ -144,14 +160,12 @@ def build_env_client() -> Any:
 
 
 def build_model_client() -> tuple[Optional[OpenAI], Optional[str]]:
-    api_base_url = os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL)
-    model_name = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
-    api_key = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
+    model_name = configured_model_name()
+    hf_token = configured_hf_token()
+    if not hf_token:
+        return None, model_name
 
-    if not api_key:
-        return None, None
-
-    return OpenAI(base_url=api_base_url, api_key=api_key), model_name
+    return OpenAI(base_url=configured_api_base_url(), api_key=hf_token), model_name
 
 
 def choose_action(
@@ -205,9 +219,9 @@ def requested_task_ids() -> List[str]:
 
 
 def normalize_log_value(value: Optional[str]) -> str:
-    if not value:
+    if value is None:
         return "null"
-    return " ".join(value.split())
+    return value
 
 
 def action_to_log_string(action: CalendarAction) -> str:
@@ -243,10 +257,14 @@ def log_step(
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
+        "[END] "
+        f"success={str(success).lower()} "
+        f"steps={steps} "
+        f"score={score:.3f} "
+        f"rewards={rewards_str}",
         flush=True,
     )
 
@@ -267,7 +285,7 @@ def run_task(
     log_start(
         task=task_id,
         env=benchmark_name(),
-        model=model_name or "deterministic-policy",
+        model=model_name or configured_model_name(),
     )
 
     try:
@@ -301,7 +319,7 @@ def run_task(
     except BaseException as exc:
         exception = exc
     finally:
-        log_end(success=success, steps=steps_taken, rewards=rewards)
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     return {
         "task_id": task_id,

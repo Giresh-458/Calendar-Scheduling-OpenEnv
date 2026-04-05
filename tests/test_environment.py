@@ -70,6 +70,14 @@ def test_hard_task_grants_partial_credit_for_one_correct_meeting():
     env = CalendarSchedulingEnvironment()
     reset_result = env.reset("task_hard")
     first_request = TASKS["task_hard"].requested_meetings[0]
+    blocker = next(
+        event for event in reset_result.observation.events if event.start_time == first_request.start_time
+    )
+
+    env.step(
+        reset_result.episode_id,
+        CalendarAction(action_type="cancel_event", event_id=blocker.event_id),
+    )
 
     partial = env.step(
         reset_result.episode_id,

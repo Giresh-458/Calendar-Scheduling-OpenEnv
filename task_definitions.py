@@ -40,6 +40,7 @@ class TaskDefinition:
     max_steps: int
     requested_meetings: Tuple[MeetingTemplate, ...]
     initial_events: Tuple[MeetingTemplate, ...] = ()
+    required_preserved_event_ids: Tuple[str, ...] = ()
 
 
 TASKS: Dict[str, TaskDefinition] = {
@@ -96,8 +97,8 @@ TASKS: Dict[str, TaskDefinition] = {
         name="Multi-Meeting Coordination",
         difficulty="hard",
         description=(
-            "Schedule two back-to-back meetings tomorrow at 10:00-11:00 and 11:00-12:00 while "
-            "preserving the surrounding existing events."
+            "Clear two blocking meetings, then schedule two back-to-back meetings tomorrow at "
+            "10:00-11:00 and 11:00-12:00 while preserving the surrounding anchor events."
         ),
         current_time=BASE_CURRENT_TIME,
         max_steps=8,
@@ -126,6 +127,20 @@ TASKS: Dict[str, TaskDefinition] = {
                 participants=("alex@example.com",),
             ),
             MeetingTemplate(
+                request_id="seed_hard_blocker_one",
+                title="Budget Review",
+                start_time=tomorrow_at(10),
+                duration_hours=1.0,
+                participants=("alex@example.com", "finance@example.com"),
+            ),
+            MeetingTemplate(
+                request_id="seed_hard_blocker_two",
+                title="Vendor Check-In",
+                start_time=tomorrow_at(11),
+                duration_hours=1.0,
+                participants=("alex@example.com", "ops@example.com"),
+            ),
+            MeetingTemplate(
                 request_id="seed_hard_afternoon",
                 title="Event B",
                 start_time=tomorrow_at(12),
@@ -133,5 +148,6 @@ TASKS: Dict[str, TaskDefinition] = {
                 participants=("alex@example.com",),
             ),
         ),
+        required_preserved_event_ids=("seed_hard_morning", "seed_hard_afternoon"),
     ),
 }

@@ -6,12 +6,15 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 try:
-    from openenv.core.env_server.types import Action, Observation, State
+    from openenv.core.env_server.types import Action, Observation, Reward, State
 except ImportError:
     class Action(BaseModel):
         model_config = {"extra": "forbid"}
 
     class Observation(BaseModel):
+        model_config = {"extra": "forbid"}
+
+    class Reward(BaseModel):
         model_config = {"extra": "forbid"}
 
     class State(BaseModel):
@@ -65,7 +68,7 @@ class CalendarAction(Action):
         return self
 
 
-class CalendarReward(BaseModel):
+class CalendarReward(Reward):
     total: float = Field(..., description="Final scalar reward returned by the transition.")
     score_delta: float = Field(..., description="Improvement in the normalized grader score.")
     step_penalty: float = Field(..., description="Small cost applied to every action.")

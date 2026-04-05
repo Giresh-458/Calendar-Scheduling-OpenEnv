@@ -70,6 +70,9 @@ class CalendarSchedulingEnvironment:
         self._episodes: Dict[str, Episode] = {}
         self._latest_episode_id: Optional[str] = None
 
+    def close(self) -> None:
+        return None
+
     def list_tasks(self) -> List[TaskSummary]:
         return [
             TaskSummary(
@@ -338,6 +341,7 @@ class CalendarSchedulingEnvironment:
                 self._template_matches_event(template, event) for event in events
             )
             for template in task.initial_events
+            if template.request_id in task.required_preserved_event_ids
         }
 
         if task.task_id == "task_hard" and score >= 1.0 and not all(preserved_initial_events.values()):

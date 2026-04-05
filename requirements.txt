@@ -2,5 +2,6 @@ fastapi>=0.110,<1
 openenv-core>=0.2.0,<1
 openai>=2.7.2,<3
 pydantic>=2.7,<3
+pytest>=8.2,<9
 requests>=2.31,<3
 uvicorn[standard]>=0.30,<1

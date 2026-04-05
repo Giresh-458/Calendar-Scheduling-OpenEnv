@@ -27,7 +27,7 @@ It includes three deterministic tasks:
 
 - `task_easy`: schedule one meeting in an empty calendar
 - `task_medium`: resolve a blocking meeting, then schedule the requested meeting
-- `task_hard`: coordinate two back-to-back meetings around existing events
+- `task_hard`: clear two blockers, then coordinate two back-to-back meetings while preserving anchor events
 
 ## Project Layout
 
@@ -121,6 +121,17 @@ Each step returns a structured observation with:
 - `last_action_error` for rejected actions
 - `reward_breakdown` with typed reward components
 
+Observation fields:
+
+- `task_id`, `task_name`, `task_description`
+- `requested_meetings`
+- `current_time`
+- `events`
+- `step`, `max_steps`, `done`
+- `feedback`, `last_action_error`
+- `score`, `last_reward`, `reward_breakdown`
+- `available_actions`
+
 ### Action
 
 Supported actions:
@@ -128,6 +139,12 @@ Supported actions:
 - `schedule_event`
 - `cancel_event`
 - `noop`
+
+Action fields:
+
+- `action_type`
+- `title`, `start_time`, `duration_hours`, `participants` for `schedule_event`
+- `event_id` for `cancel_event`
 
 Example action payload:
 
@@ -161,7 +178,9 @@ Example action payload:
 ### `task_hard`
 
 - Goal: place two back-to-back meetings at `10:00-11:00` and `11:00-12:00`
-- Initial calendar: existing meetings at `09:00-10:00` and `12:00-13:00`
+- Initial calendar: anchor meetings at `09:00-10:00` and `12:00-13:00`
+- Blocking meetings already occupy `10:00-11:00` and `11:00-12:00`
+- Expected behavior: remove both blockers, schedule both requested meetings, and keep the anchor meetings intact
 
 ## Reward Shaping
 
@@ -215,16 +234,21 @@ Grades either:
 - `API_BASE_URL`
 - `MODEL_NAME`
 - `HF_TOKEN`
+- optional `LOCAL_IMAGE_NAME` only for Docker-image-backed environments using `from_docker_image()`
+
+Defaults are provided only for `API_BASE_URL` and `MODEL_NAME`. `HF_TOKEN` must be supplied in the submission environment when you want model-backed inference.
 
 It evaluates all three tasks in order and prints only the required structured stdout lines:
 
 ```text
 [START] task=<task_id> env=<benchmark> model=<model_name>
 [STEP] step=<n> action=<json_action> reward=<0.00> done=<true|false> error=<msg|null>
-[END] success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
+[END] success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
 ```
 
-The script uses the OpenAI client whenever `HF_TOKEN` or `OPENAI_API_KEY` is set, but still applies a deterministic safety policy so baseline scores remain reproducible.
+The script uses the OpenAI client for all LLM calls when `HF_TOKEN` is present, but still applies a deterministic safety policy so baseline scores remain reproducible.
+
+This repository does not require a Docker image name inside `inference.py`. If you see `IMAGE_NAME` or `LOCAL_IMAGE_NAME` in the sample materials, treat them as sample-only variables for image-backed environments rather than a requirement for this HTTP/embedded environment.
 
 For local reproducibility, the script defaults to an embedded in-process environment when `ENV_BASE_URL` is not set. If `ENV_BASE_URL` is provided, it will target the running HTTP server or deployed HF Space instead.
 
@@ -259,6 +283,7 @@ The test suite covers:
 - conflict handling for the medium task
 - partial credit on the hard task
 - full-score deterministic baseline planning across all three tasks
+- a longer policy trajectory for `task_hard` than for `task_medium`
 - strict `[START]` / `[STEP]` / `[END]` logging for the submission script
 
 Run:
