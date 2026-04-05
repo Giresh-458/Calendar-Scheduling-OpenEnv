@@ -23,7 +23,7 @@ fi
 
 run_with_timeout() {
   local secs="$1"; shift
-  if command -v timeout &>/dev/null; then
+  if command -v timeout &>/dev/null && timeout --version 2>/dev/null | grep -qi "coreutils"; then
     timeout "$secs" "$@"
   elif command -v gtimeout &>/dev/null; then
     gtimeout "$secs" "$@"
