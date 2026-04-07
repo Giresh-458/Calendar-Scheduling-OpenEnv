@@ -104,7 +104,12 @@ class CalendarObservation(Observation):
         None,
         description="Raw error text from the last invalid or rejected action, if any.",
     )
-    score: float = Field(..., ge=0.0, le=1.0, description="Current deterministic graded score.")
+    score: float = Field(
+        ...,
+        gt=0.0,
+        lt=1.0,
+        description="Current deterministic graded score, normalized to the open interval (0, 1).",
+    )
     last_reward: float = Field(..., description="Reward returned by the previous transition.")
     reward_breakdown: CalendarReward = Field(
         ...,
@@ -122,7 +127,12 @@ class CalendarState(State):
     step_count: int = Field(..., description="Steps taken so far.")
     max_steps: int = Field(..., description="Maximum steps for the episode.")
     cumulative_reward: float = Field(..., description="Total accumulated reward.")
-    last_score: float = Field(..., ge=0.0, le=1.0, description="Most recent deterministic score.")
+    last_score: float = Field(
+        ...,
+        gt=0.0,
+        lt=1.0,
+        description="Most recent deterministic score, normalized to the open interval (0, 1).",
+    )
     last_reward: float = Field(..., description="Most recent scalar reward.")
     last_action_error: Optional[str] = Field(
         None,
@@ -179,6 +189,6 @@ class GraderRequest(BaseModel):
 
 class GraderResponse(BaseModel):
     task_id: str
-    score: float = Field(..., ge=0.0, le=1.0)
+    score: float = Field(..., gt=0.0, lt=1.0)
     passed: bool
     details: Dict[str, Any] = Field(default_factory=dict)

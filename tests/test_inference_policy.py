@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from inference import plan_next_action
-from server.environment import CalendarSchedulingEnvironment
+from server.environment import CalendarSchedulingEnvironment, MAX_PUBLIC_SCORE
 from task_definitions import TASKS
 
 
@@ -25,7 +25,7 @@ def solve_with_policy(task_id: str) -> tuple[float, int]:
 def test_policy_baseline_solves_all_tasks():
     for task_id in TASKS:
         score, _ = solve_with_policy(task_id)
-        assert score == 1.0
+        assert score == MAX_PUBLIC_SCORE
 
 
 def test_hard_task_requires_more_policy_steps_than_medium():

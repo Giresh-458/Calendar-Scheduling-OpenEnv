@@ -54,6 +54,20 @@ def test_inference_logs_configured_model_name_without_credentials(monkeypatch, c
     assert first_line == "[START] task=task_easy env=calendar_scheduling_env model=sample-model-name"
 
 
+def test_inference_marks_solved_tasks_as_success_with_open_interval_scores(monkeypatch, capsys):
+    monkeypatch.delenv("ENV_BASE_URL", raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv("TASK_IDS", "task_easy")
+    monkeypatch.delenv("SUCCESS_SCORE_THRESHOLD", raising=False)
+
+    main()
+
+    end_line = next(
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("[END]")
+    )
+    assert end_line == "[END] success=true steps=1 score=0.999 rewards=1.19"
+
+
 def test_build_model_client_requires_hf_token(monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setenv("API_KEY", "test-api-key")

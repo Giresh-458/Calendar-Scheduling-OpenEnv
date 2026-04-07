@@ -21,6 +21,11 @@ from models import (
 from task_definitions import MeetingTemplate, TASKS, TaskDefinition
 
 
+MIN_PUBLIC_SCORE = 0.001
+MAX_PUBLIC_SCORE = 0.999
+SOLVED_RAW_SCORE = 1.0
+
+
 def ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -45,6 +50,19 @@ def zero_reward_breakdown() -> CalendarReward:
         destructive_action_penalty=0.0,
         completion_bonus=0.0,
     )
+
+
+def normalize_public_score(value: float) -> float:
+    bounded = round(max(0.0, min(SOLVED_RAW_SCORE, value)), 4)
+    if bounded <= MIN_PUBLIC_SCORE:
+        return MIN_PUBLIC_SCORE
+    if bounded >= MAX_PUBLIC_SCORE:
+        return MAX_PUBLIC_SCORE
+    return bounded
+
+
+def is_solved_raw_score(value: float) -> bool:
+    return value >= SOLVED_RAW_SCORE
 
 
 @dataclass
@@ -92,7 +110,7 @@ class CalendarSchedulingEnvironment:
             for index, template in enumerate(resolved_task.initial_events)
         ]
         episode_id = str(uuid4())
-        initial_score, _ = self._grade_events(resolved_task, events)
+        initial_score, _, _ = self._grade_events(resolved_task, events)
         episode = Episode(
             episode_id=episode_id,
             task=resolved_task,
@@ -154,11 +172,11 @@ class CalendarSchedulingEnvironment:
 
         episode.step_count += 1
         previous_score = episode.last_score
-        score, details = self._grade_events(episode.task, episode.events)
+        score, solved, details = self._grade_events(episode.task, episode.events)
         score_delta = round(score - previous_score, 4)
         reward = score_delta + reward_delta + invalid_action_penalty + destructive_action_penalty
 
-        if score >= 1.0:
+        if solved:
             completion_bonus = 0.2
             reward += completion_bonus
             episode.done = True
@@ -181,9 +199,9 @@ class CalendarSchedulingEnvironment:
         episode.last_reward_breakdown = reward_breakdown
         if action_error is None:
             if score_delta > 0:
-                feedback = f"{feedback} Score improved to {score:.2f}."
+                feedback = f"{feedback} Score improved to {score:.3f}."
             else:
-                feedback = f"{feedback} Current score is {score:.2f}."
+                feedback = f"{feedback} Current score is {score:.3f}."
         episode.last_feedback = feedback
 
         observation = self._build_observation(episode)
@@ -219,18 +237,18 @@ class CalendarSchedulingEnvironment:
 
     def grade_episode(self, episode_id: str) -> GraderResponse:
         episode = self._episodes[episode_id]
-        score, details = self._grade_events(episode.task, episode.events)
+        score, solved, details = self._grade_events(episode.task, episode.events)
         return GraderResponse(
             task_id=episode.task.task_id,
             score=score,
-            passed=score >= 1.0,
+            passed=solved,
             details=details,
         )
 
     def grade_explicit(self, task_id: str, events: List[CalendarEvent]) -> GraderResponse:
         task = TASKS[task_id]
-        score, details = self._grade_events(task, events)
-        return GraderResponse(task_id=task_id, score=score, passed=score >= 1.0, details=details)
+        score, solved, details = self._grade_events(task, events)
+        return GraderResponse(task_id=task_id, score=score, passed=solved, details=details)
 
     def _build_observation(self, episode: Episode) -> CalendarObservation:
         return CalendarObservation(
@@ -304,22 +322,24 @@ class CalendarSchedulingEnvironment:
         self,
         task: TaskDefinition,
         events: List[CalendarEvent],
-    ) -> Tuple[float, Dict[str, object]]:
+    ) -> Tuple[float, bool, Dict[str, object]]:
+        raw_request_scores = {}
         request_scores = {}
         request_exact_matches = {}
 
         for request in task.requested_meetings:
-            best_score = 0.0
+            best_raw_score = 0.0
             exact_match = False
             for event in events:
                 similarity = self._meeting_similarity(request, event)
-                best_score = max(best_score, similarity)
+                best_raw_score = max(best_raw_score, similarity)
                 if similarity >= 1.0:
                     exact_match = True
-            request_scores[request.request_id] = best_score
+            raw_request_scores[request.request_id] = best_raw_score
+            request_scores[request.request_id] = normalize_public_score(best_raw_score)
             request_exact_matches[request.request_id] = exact_match
 
-        score = round(sum(request_scores.values()) / len(task.requested_meetings), 4)
+        raw_score = round(sum(raw_request_scores.values()) / len(task.requested_meetings), 4)
         conflicts_present = self._has_any_overlap(events)
 
         if task.task_id == "task_medium":
@@ -332,9 +352,9 @@ class CalendarSchedulingEnvironment:
                 and self._meeting_similarity(target, event) < 1.0
             ]
             if request_exact_matches[target.request_id] and not target_blockers:
-                score = 1.0
+                raw_score = SOLVED_RAW_SCORE
             elif request_exact_matches[target.request_id]:
-                score = 0.5
+                raw_score = 0.5
 
         preserved_initial_events = {
             template.request_id: any(
@@ -344,11 +364,18 @@ class CalendarSchedulingEnvironment:
             if template.request_id in task.required_preserved_event_ids
         }
 
-        if task.task_id == "task_hard" and score >= 1.0 and not all(preserved_initial_events.values()):
-            score = 0.75
+        if (
+            task.task_id == "task_hard"
+            and is_solved_raw_score(raw_score)
+            and not all(preserved_initial_events.values())
+        ):
+            raw_score = 0.75
 
         if conflicts_present:
-            score = max(0.0, round(score - 0.25, 4))
+            raw_score = max(0.0, round(raw_score - 0.25, 4))
+
+        solved = is_solved_raw_score(raw_score)
+        score = normalize_public_score(raw_score)
 
         details = {
             "task_name": task.name,
@@ -357,7 +384,7 @@ class CalendarSchedulingEnvironment:
             "event_count": len(events),
             "preserved_initial_events": preserved_initial_events,
         }
-        return score, details
+        return score, solved, details
 
     def _meeting_similarity(self, request: MeetingTemplate, event: CalendarEvent) -> float:
         same_day = request.start_time.date() == event.start_time.date()

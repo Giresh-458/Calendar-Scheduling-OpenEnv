@@ -8,6 +8,7 @@ from openai import OpenAI
 
 from client import CalendarSchedulingEnvClient, EmbeddedCalendarSchedulingEnvClient
 from models import CalendarAction, CalendarEvent, CalendarObservation, MeetingRequest
+from server.environment import MAX_PUBLIC_SCORE
 from task_definitions import TASKS
 
 
@@ -145,7 +146,7 @@ def configured_local_image_name() -> Optional[str]:
 
 
 def success_score_threshold() -> float:
-    return float(os.getenv("SUCCESS_SCORE_THRESHOLD", "1.0"))
+    return float(os.getenv("SUCCESS_SCORE_THRESHOLD", f"{MAX_PUBLIC_SCORE:.3f}"))
 
 
 def max_agent_steps() -> int:
@@ -344,7 +345,7 @@ def run_task(
         if episode_id is not None:
             grade = env_client.grade(episode_id)
             score = grade.score
-            success = grade.score >= success_score_threshold()
+            success = grade.passed or grade.score >= success_score_threshold()
     except BaseException as exc:
         exception = exc
     finally:

@@ -192,7 +192,7 @@ The environment uses dense rewards:
 - a destructive-action penalty when the agent cancels an event
 - completion bonus when a task reaches full score
 
-The deterministic grader always computes a final normalized score between `0.0` and `1.0`. Each transition also exposes a typed `CalendarReward` breakdown so agents can learn from progress, mistakes, and destructive edits separately.
+The deterministic grader always computes a final normalized score strictly between `0.0` and `1.0`. Unsolved states floor at `0.001`, solved tasks top out at `0.999`, and each transition also exposes a typed `CalendarReward` breakdown so agents can learn from progress, mistakes, and destructive edits separately.
 
 ## Endpoints
 
@@ -258,7 +258,7 @@ Optional environment variables:
 - `TASK_IDS` can restrict evaluation to a comma-separated subset such as `task_easy,task_medium`
 - `MAX_AGENT_STEPS` defaults to `8`
 - `BENCHMARK_NAME` overrides the benchmark label printed in the `[START]` line
-- `SUCCESS_SCORE_THRESHOLD` defaults to `1.0`
+- `SUCCESS_SCORE_THRESHOLD` defaults to `0.999`
 
 Example local run:
 
@@ -270,10 +270,10 @@ python inference.py
 
 With the embedded deterministic baseline policy, the environment reaches:
 
-- `task_easy`: `1.0`
-- `task_medium`: `1.0`
-- `task_hard`: `1.0`
-- average: `1.0`
+- `task_easy`: `0.999`
+- `task_medium`: `0.999`
+- `task_hard`: `0.999`
+- average: `0.999`
 
 ## Tests
 
