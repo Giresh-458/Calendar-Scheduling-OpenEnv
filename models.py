@@ -70,7 +70,7 @@ class CalendarAction(Action):
 
 class CalendarReward(Reward):
     total: float = Field(..., description="Final scalar reward returned by the transition.")
-    score_delta: float = Field(..., description="Improvement in the normalized grader score.")
+    progress_delta: float = Field(..., description="Change in the normalized grader score.")
     step_penalty: float = Field(..., description="Small cost applied to every action.")
     invalid_action_penalty: float = Field(
         ...,

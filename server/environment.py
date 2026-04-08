@@ -44,7 +44,7 @@ def overlaps(
 def zero_reward_breakdown() -> CalendarReward:
     return CalendarReward(
         total=0.0,
-        score_delta=0.0,
+        progress_delta=0.0,
         step_penalty=0.0,
         invalid_action_penalty=0.0,
         destructive_action_penalty=0.0,
@@ -186,7 +186,7 @@ class CalendarSchedulingEnvironment:
         reward = round(reward, 4)
         reward_breakdown = CalendarReward(
             total=reward,
-            score_delta=score_delta,
+            progress_delta=score_delta,
             step_penalty=reward_delta,
             invalid_action_penalty=invalid_action_penalty,
             destructive_action_penalty=destructive_action_penalty,
