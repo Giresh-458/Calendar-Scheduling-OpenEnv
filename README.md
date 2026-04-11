@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: green
 sdk: docker
 app_port: 8000
-short_description: Rich OpenEnv calendar coordination benchmark with rescheduling and protected events.
+short_description: Rich calendar coordination benchmark for OpenEnv agents.
 tags:
   - openenv
   - scheduling
