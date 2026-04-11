@@ -29,6 +29,34 @@ def test_hard_task_does_not_allow_deleting_required_seed_events_for_full_credit(
     assert grade.score < 1.0
 
 
+def test_medium_task_does_not_allow_deleting_relocatable_blocker_for_full_credit():
+    env = CalendarSchedulingEnvironment()
+    reset_result = env.reset("task_medium")
+    episode_id = reset_result.episode_id
+    request = TASKS["task_medium"].requested_meetings[0]
+
+    env.step(
+        episode_id,
+        CalendarAction(
+            action_type="cancel_event",
+            event_id=reset_result.observation.events[0].event_id,
+        ),
+    )
+    env.step(
+        episode_id,
+        CalendarAction(
+            action_type="schedule_event",
+            title=request.title,
+            start_time=request.start_time,
+            duration_hours=request.duration_hours,
+            participants=list(request.participants),
+        ),
+    )
+
+    grade = env.grade_episode(episode_id)
+    assert grade.score < 1.0
+
+
 def test_wrong_title_does_not_receive_full_credit():
     env = CalendarSchedulingEnvironment()
     reset_result = env.reset("task_easy")

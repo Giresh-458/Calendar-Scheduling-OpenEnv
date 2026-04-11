@@ -28,6 +28,14 @@ def test_policy_baseline_solves_all_tasks():
         assert score == MAX_PUBLIC_SCORE
 
 
+def test_complex_exec_day_requires_more_policy_steps_than_medium():
+    _, medium_steps = solve_with_policy("task_medium")
+    _, exec_steps = solve_with_policy("task_exec_dense_day")
+
+    assert medium_steps == 2
+    assert exec_steps == 6
+
+
 def test_hard_task_requires_more_policy_steps_than_medium():
     _, medium_steps = solve_with_policy("task_medium")
     _, hard_steps = solve_with_policy("task_hard")

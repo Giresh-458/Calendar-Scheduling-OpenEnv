@@ -14,12 +14,13 @@ from models import (
     GraderRequest,
     ResetRequest,
     StepRequest,
+    TaskSummary,
 )
 from server.environment import CalendarSchedulingEnvironment
 
 
 env = CalendarSchedulingEnvironment()
-app = FastAPI(title="Calendar Scheduling Environment", version="0.1.0")
+app = FastAPI(title="Calendar Scheduling Environment", version="0.2.0")
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 
 
@@ -29,6 +30,16 @@ def index() -> dict:
         "name": "calendar-scheduling-env",
         "status": "ok",
         "openenv": True,
+        "benchmark": "rich_calendar_coordination",
+        "task_count": len(env.list_tasks()),
+        "capabilities": [
+            "schedule_event",
+            "cancel_event",
+            "reschedule_event",
+            "dense_reward_shaping",
+            "protected_events",
+            "fallback_slots",
+        ],
         "endpoints": ["/health", "/tasks", "/reset", "/step", "/state", "/grader"],
     }
 
@@ -38,7 +49,7 @@ def metadata() -> dict:
     readme_content = README_PATH.read_text(encoding="utf-8") if README_PATH.exists() else None
     return {
         "name": "calendar-scheduling-env",
-        "description": "Deterministic calendar scheduling environment for OpenEnv agents.",
+        "description": "Deterministic calendar coordination benchmark with protected anchors, fallback slots, and rescheduling.",
         "version": app.version,
         "readme_content": readme_content,
     }
@@ -50,6 +61,7 @@ def schema() -> dict:
         "action": CalendarAction.model_json_schema(),
         "observation": CalendarObservation.model_json_schema(),
         "state": CalendarState.model_json_schema(),
+        "task_summary": TaskSummary.model_json_schema(),
     }
 
 

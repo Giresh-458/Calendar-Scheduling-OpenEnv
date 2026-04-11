@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -23,6 +24,7 @@ Return exactly one JSON object and nothing else.
 Valid action schemas:
 {"action_type":"schedule_event","title":"...","start_time":"ISO-8601","duration_hours":1.0,"participants":["..."]}
 {"action_type":"cancel_event","event_id":1}
+{"action_type":"reschedule_event","event_id":1,"new_start_time":"ISO-8601","duration_hours":1.0}
 {"action_type":"noop"}
 
 If the observation includes a suggested_safe_action, prefer returning it exactly when it is valid.
@@ -65,11 +67,17 @@ def parse_action(raw_text: str) -> Optional[CalendarAction]:
 
 
 def event_matches_request(event: CalendarEvent, request: MeetingRequest) -> bool:
-    return (
-        event.start_time == request.start_time
-        and event.end_time == request.end_time
-        and set(request.participants).issubset(set(event.participants))
-    )
+    if event.title.strip().casefold() != request.title.strip().casefold():
+        return False
+    if not set(request.participants).issubset(set(event.participants)):
+        return False
+
+    for start_time, duration_hours in request_slots(request):
+        end_time = start_time + timedelta(hours=duration_hours)
+        if event.start_time == start_time and event.end_time == end_time:
+            return True
+
+    return False
 
 
 def has_overlap(
@@ -86,29 +94,95 @@ def exact_duration_hours(request: MeetingRequest) -> float:
     return duration_seconds / 3600.0
 
 
+def request_slots(request: MeetingRequest) -> List[tuple]:
+    slots = [(request.start_time, exact_duration_hours(request))]
+    slots.extend((slot.start_time, slot.duration_hours) for slot in request.alternate_slots)
+    return slots
+
+
+def has_preferred_match(events: List[CalendarEvent], request: MeetingRequest) -> bool:
+    preferred_end_time = request.start_time + timedelta(hours=exact_duration_hours(request))
+    return any(
+        event.title.strip().casefold() == request.title.strip().casefold()
+        and set(request.participants).issubset(set(event.participants))
+        and event.start_time == request.start_time
+        and event.end_time == preferred_end_time
+        for event in events
+    )
+
+
+def find_relocation_action(
+    observation: CalendarObservation,
+    event: CalendarEvent,
+) -> Optional[CalendarAction]:
+    if event.protected or not event.movable:
+        return None
+
+    for slot in event.relocation_candidates:
+        proposed_start = slot.start_time
+        proposed_end = proposed_start + timedelta(hours=slot.duration_hours)
+        blocked = any(
+            other.event_id != event.event_id
+            and has_overlap(
+                proposed_start,
+                proposed_end,
+                other.start_time,
+                other.end_time,
+            )
+            for other in observation.events
+        )
+        if blocked:
+            continue
+        return CalendarAction(
+            action_type="reschedule_event",
+            event_id=event.event_id,
+            new_start_time=proposed_start,
+            duration_hours=slot.duration_hours,
+        )
+
+    return None
+
+
 def plan_next_action(observation: CalendarObservation) -> CalendarAction:
-    for request in observation.requested_meetings:
-        if any(event_matches_request(event, request) for event in observation.events):
+    requests = sorted(
+        observation.requested_meetings,
+        key=lambda request: (-request.priority, request.start_time),
+    )
+
+    for request in requests:
+        if has_preferred_match(observation.events, request):
             continue
 
-        for event in observation.events:
-            if event_matches_request(event, request):
-                continue
-            if has_overlap(
-                request.start_time,
-                request.end_time,
-                event.start_time,
-                event.end_time,
-            ):
-                return CalendarAction(action_type="cancel_event", event_id=event.event_id)
+        for start_time, duration_hours in request_slots(request):
+            end_time = start_time + timedelta(hours=duration_hours)
+            conflicts = [
+                event
+                for event in observation.events
+                if has_overlap(start_time, end_time, event.start_time, event.end_time)
+            ]
 
-        return CalendarAction(
-            action_type="schedule_event",
-            title=request.title,
-            start_time=request.start_time,
-            duration_hours=exact_duration_hours(request),
-            participants=list(request.participants),
-        )
+            if not conflicts:
+                return CalendarAction(
+                    action_type="schedule_event",
+                    title=request.title,
+                    start_time=start_time,
+                    duration_hours=duration_hours,
+                    participants=list(request.participants),
+                )
+
+            protected_conflict = any(event.protected for event in conflicts)
+            if protected_conflict:
+                continue
+
+            for conflict in conflicts:
+                relocation_action = find_relocation_action(observation, conflict)
+                if relocation_action is not None:
+                    return relocation_action
+                if not conflict.protected:
+                    return CalendarAction(action_type="cancel_event", event_id=conflict.event_id)
+
+        if any(event_matches_request(event, request) for event in observation.events):
+            continue
 
     return CalendarAction(action_type="noop")
 

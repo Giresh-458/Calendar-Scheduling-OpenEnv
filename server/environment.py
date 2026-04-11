@@ -13,12 +13,13 @@ from models import (
     CalendarObservation,
     CalendarReward,
     CalendarState,
+    CandidateSlot,
     GraderResponse,
     MeetingRequest,
     StepResult,
     TaskSummary,
 )
-from task_definitions import MeetingTemplate, TASKS, TaskDefinition
+from task_definitions import CandidateSlotTemplate, MeetingTemplate, TASKS, TaskDefinition
 
 
 MIN_PUBLIC_SCORE = 0.001
@@ -81,6 +82,7 @@ class Episode:
     last_reward: float = 0.0
     last_action_error: Optional[str] = None
     last_reward_breakdown: CalendarReward = field(default_factory=zero_reward_breakdown)
+    history: List[str] = field(default_factory=list)
 
 
 class CalendarSchedulingEnvironment:
@@ -99,6 +101,9 @@ class CalendarSchedulingEnvironment:
                 difficulty=task.difficulty,
                 description=task.description,
                 max_steps=task.max_steps,
+                scenario_type=task.scenario_type,
+                request_count=len(task.requested_meetings),
+                supports_reschedule=any(template.relocation_candidates for template in task.initial_events),
             )
             for task in TASKS.values()
         ]
@@ -120,6 +125,7 @@ class CalendarSchedulingEnvironment:
             last_score=initial_score,
             next_event_id=len(events) + 1,
             last_feedback=f"Task '{resolved_task.name}' loaded.",
+            history=[f"Loaded task '{resolved_task.name}'."],
         )
         self._episodes[episode_id] = episode
         self._latest_episode_id = episode_id
@@ -166,6 +172,8 @@ class CalendarSchedulingEnvironment:
             feedback, invalid_action_penalty = self._handle_cancel(episode, action)
             if invalid_action_penalty == 0.0:
                 destructive_action_penalty = -0.05
+        elif action.action_type == "reschedule_event":
+            feedback, invalid_action_penalty = self._handle_reschedule(episode, action)
 
         if invalid_action_penalty < 0.0:
             action_error = feedback
@@ -197,11 +205,14 @@ class CalendarSchedulingEnvironment:
         episode.last_reward = reward
         episode.last_action_error = action_error
         episode.last_reward_breakdown = reward_breakdown
+
         if action_error is None:
             if score_delta > 0:
                 feedback = f"{feedback} Score improved to {score:.3f}."
             else:
                 feedback = f"{feedback} Current score is {score:.3f}."
+            episode.history.append(feedback)
+
         episode.last_feedback = feedback
 
         observation = self._build_observation(episode)
@@ -232,6 +243,10 @@ class CalendarSchedulingEnvironment:
             done=episode.done,
             created_at=episode.created_at,
             current_time=self._current_time_for_step(episode),
+            protected_event_ids=self._protected_event_ids(episode.events),
+            movable_event_ids=self._movable_event_ids(episode.events),
+            scheduler_notes=list(episode.task.scheduler_notes),
+            history=list(episode.history),
             events=deepcopy(episode.events),
         )
 
@@ -266,6 +281,10 @@ class CalendarSchedulingEnvironment:
             score=episode.last_score,
             last_reward=episode.last_reward,
             reward_breakdown=episode.last_reward_breakdown,
+            protected_event_ids=self._protected_event_ids(episode.events),
+            movable_event_ids=self._movable_event_ids(episode.events),
+            scheduler_notes=list(episode.task.scheduler_notes),
+            recent_history=list(episode.history[-5:]),
         )
 
     def _current_time_for_step(self, episode: Episode) -> datetime:
@@ -287,17 +306,69 @@ class CalendarSchedulingEnvironment:
             start_time=start_time,
             end_time=end_time,
             participants=list(action.participants),
+            movable=True,
+            protected=False,
         )
         episode.events.append(new_event)
         episode.next_event_id += 1
         return (f"Scheduled '{new_event.title}' at {new_event.start_time.isoformat()}.", 0.0)
 
     def _handle_cancel(self, episode: Episode, action: CalendarAction) -> Tuple[str, float]:
-        for index, event in enumerate(episode.events):
-            if event.event_id == action.event_id:
-                removed = episode.events.pop(index)
-                return (f"Cancelled '{removed.title}'.", 0.0)
-        return ("Cancel rejected because the event_id does not exist.", -0.5)
+        target = self._find_event(episode.events, action.event_id)
+        if target is None:
+            return ("Cancel rejected because the event_id does not exist.", -0.5)
+        if target.protected:
+            return ("Cancel rejected because the event is protected.", -0.75)
+
+        episode.events = [event for event in episode.events if event.event_id != target.event_id]
+        return (f"Cancelled '{target.title}'.", 0.0)
+
+    def _handle_reschedule(self, episode: Episode, action: CalendarAction) -> Tuple[str, float]:
+        target = self._find_event(episode.events, action.event_id)
+        if target is None:
+            return ("Reschedule rejected because the event_id does not exist.", -0.5)
+        if target.protected:
+            return ("Reschedule rejected because the event is protected.", -0.75)
+        if not target.movable:
+            return ("Reschedule rejected because the event is locked.", -0.5)
+
+        new_start_time = ensure_utc(action.new_start_time)
+        duration_hours = action.duration_hours or self._event_duration_hours(target)
+        new_end_time = new_start_time + timedelta(hours=float(duration_hours))
+
+        if target.relocation_candidates and not any(
+            self._event_matches_slot(target, slot.start_time, slot.duration_hours, new_start_time, new_end_time)
+            for slot in target.relocation_candidates
+        ):
+            return (
+                "Reschedule rejected because the new slot is not one of the approved relocation candidates.",
+                -0.4,
+            )
+
+        conflicts = [
+            event
+            for event in episode.events
+            if event.event_id != target.event_id
+            and overlaps(new_start_time, new_end_time, event.start_time, event.end_time)
+        ]
+        if conflicts:
+            return (
+                "Reschedule rejected because the new time overlaps another event.",
+                -0.5,
+            )
+
+        target.start_time = new_start_time
+        target.end_time = new_end_time
+        return (
+            f"Rescheduled '{target.title}' to {target.start_time.isoformat()}.",
+            0.0,
+        )
+
+    def _find_event(self, events: Iterable[CalendarEvent], event_id: Optional[int]) -> Optional[CalendarEvent]:
+        for event in events:
+            if event.event_id == event_id:
+                return event
+        return None
 
     def _find_conflicts(
         self,
@@ -323,93 +394,154 @@ class CalendarSchedulingEnvironment:
         task: TaskDefinition,
         events: List[CalendarEvent],
     ) -> Tuple[float, bool, Dict[str, object]]:
-        raw_request_scores = {}
-        request_scores = {}
-        request_exact_matches = {}
+        raw_request_scores: Dict[str, float] = {}
+        request_scores: Dict[str, float] = {}
+        request_slot_quality: Dict[str, str] = {}
 
         for request in task.requested_meetings:
             best_raw_score = 0.0
-            exact_match = False
+            best_quality = "missing"
             for event in events:
-                similarity = self._meeting_similarity(request, event)
-                best_raw_score = max(best_raw_score, similarity)
-                if similarity >= 1.0:
-                    exact_match = True
+                similarity, quality = self._meeting_similarity(request, event)
+                if similarity > best_raw_score:
+                    best_raw_score = similarity
+                    best_quality = quality
             raw_request_scores[request.request_id] = best_raw_score
             request_scores[request.request_id] = normalize_public_score(best_raw_score)
-            request_exact_matches[request.request_id] = exact_match
+            request_slot_quality[request.request_id] = best_quality
 
         raw_score = round(sum(raw_request_scores.values()) / len(task.requested_meetings), 4)
         conflicts_present = self._has_any_overlap(events)
 
-        if task.task_id == "task_medium":
-            target = task.requested_meetings[0]
-            target_blockers = [
-                event
-                for event in events
-                if event.start_time == target.start_time
-                and event.end_time == target.end_time
-                and self._meeting_similarity(target, event) < 1.0
-            ]
-            if request_exact_matches[target.request_id] and not target_blockers:
-                raw_score = SOLVED_RAW_SCORE
-            elif request_exact_matches[target.request_id]:
-                raw_score = 0.5
-
-        preserved_initial_events = {
-            template.request_id: any(
-                self._template_matches_event(template, event) for event in events
-            )
+        required_preserved_events = {
+            template.request_id: any(self._template_matches_event(template, event) for event in events)
             for template in task.initial_events
             if template.request_id in task.required_preserved_event_ids
         }
+        preferred_preserved_events = {
+            template.request_id: any(self._template_preserved_or_relocated(template, event) for event in events)
+            for template in task.initial_events
+            if template.request_id in task.preferred_preserved_event_ids
+        }
 
-        if (
-            task.task_id == "task_hard"
-            and is_solved_raw_score(raw_score)
-            and not all(preserved_initial_events.values())
-        ):
-            raw_score = 0.75
+        missing_required = sum(not is_preserved for is_preserved in required_preserved_events.values())
+        missing_preferred = sum(not is_preserved for is_preserved in preferred_preserved_events.values())
+
+        if missing_required:
+            raw_score = max(0.0, round(raw_score - (0.25 * missing_required), 4))
+
+        if missing_preferred:
+            raw_score = max(0.0, round(raw_score - (0.08 * missing_preferred), 4))
 
         if conflicts_present:
             raw_score = max(0.0, round(raw_score - 0.25, 4))
 
-        solved = is_solved_raw_score(raw_score)
+        all_requests_preferred = all(quality == "preferred" for quality in request_slot_quality.values())
+        solved = (
+            all_requests_preferred
+            and missing_required == 0
+            and missing_preferred == 0
+            and not conflicts_present
+        )
+        if solved:
+            raw_score = SOLVED_RAW_SCORE
+
         score = normalize_public_score(raw_score)
 
         details = {
             "task_name": task.name,
             "request_scores": request_scores,
+            "request_slot_quality": request_slot_quality,
             "conflicts_present": conflicts_present,
             "event_count": len(events),
-            "preserved_initial_events": preserved_initial_events,
+            "preserved_initial_events": required_preserved_events,
+            "preferred_preserved_events": preferred_preserved_events,
+            "missing_required_preservations": missing_required,
+            "missing_preferred_preservations": missing_preferred,
         }
         return score, solved, details
 
-    def _meeting_similarity(self, request: MeetingTemplate, event: CalendarEvent) -> float:
-        same_day = request.start_time.date() == event.start_time.date()
-        same_start = request.start_time == event.start_time
-        same_end = request.end_time == event.end_time
-        same_duration = request.end_time - request.start_time == event.end_time - event.start_time
+    def _meeting_similarity(self, request: MeetingTemplate, event: CalendarEvent) -> Tuple[float, str]:
         title_match = request.title.strip().casefold() == event.title.strip().casefold()
         participants_match = set(request.participants).issubset(set(event.participants))
+        duration_match = (request.end_time - request.start_time) == (event.end_time - event.start_time)
+        same_day = request.start_time.date() == event.start_time.date()
 
-        if same_start and same_end and title_match and participants_match:
-            return 1.0
-        if same_start and same_end and title_match:
-            return 0.85
-        if same_day and same_duration and (title_match or participants_match):
-            return 0.5
+        if title_match and participants_match and self._event_matches_slot(
+            event,
+            request.start_time,
+            request.duration_hours,
+        ):
+            return 1.0, "preferred"
+
+        if title_match and participants_match:
+            for slot in request.alternate_slots:
+                if self._event_matches_slot(event, slot.start_time, slot.duration_hours):
+                    return 0.92, "alternate"
+
+        if title_match and self._event_matches_slot(event, request.start_time, request.duration_hours):
+            return 0.85, "preferred_title_only"
+
+        if same_day and duration_match and (title_match or participants_match):
+            return 0.5, "partial"
+
         if same_day and (title_match or participants_match):
-            return 0.25
-        return 0.0
+            return 0.25, "weak"
+
+        return 0.0, "missing"
 
     def _template_matches_event(self, template: MeetingTemplate, event: CalendarEvent) -> bool:
         return (
             template.title.strip().casefold() == event.title.strip().casefold()
-            and template.start_time == event.start_time
-            and template.end_time == event.end_time
-            and set(template.participants).issubset(set(event.participants))
+            and self._participants_match(template.participants, event.participants)
+            and self._event_matches_slot(event, template.start_time, template.duration_hours)
+        )
+
+    def _template_preserved_or_relocated(self, template: MeetingTemplate, event: CalendarEvent) -> bool:
+        if template.title.strip().casefold() != event.title.strip().casefold():
+            return False
+        if not self._participants_match(template.participants, event.participants):
+            return False
+
+        if self._event_matches_slot(event, template.start_time, template.duration_hours):
+            return True
+
+        return any(
+            self._event_matches_slot(event, slot.start_time, slot.duration_hours)
+            for slot in template.relocation_candidates
+        )
+
+    def _participants_match(self, expected: Iterable[str], actual: Iterable[str]) -> bool:
+        return set(expected).issubset(set(actual))
+
+    def _event_matches_slot(
+        self,
+        event: CalendarEvent,
+        slot_start: datetime,
+        slot_duration_hours: float,
+        actual_start: Optional[datetime] = None,
+        actual_end: Optional[datetime] = None,
+    ) -> bool:
+        resolved_start = actual_start or event.start_time
+        resolved_end = actual_end or event.end_time
+        expected_end = ensure_utc(slot_start) + timedelta(hours=slot_duration_hours)
+        return resolved_start == ensure_utc(slot_start) and resolved_end == expected_end
+
+    def _event_duration_hours(self, event: CalendarEvent) -> float:
+        return (event.end_time - event.start_time).total_seconds() / 3600.0
+
+    def _protected_event_ids(self, events: Iterable[CalendarEvent]) -> List[int]:
+        return [event.event_id for event in events if event.protected]
+
+    def _movable_event_ids(self, events: Iterable[CalendarEvent]) -> List[int]:
+        return [event.event_id for event in events if event.movable and not event.protected]
+
+    def _template_slot_to_model(self, slot: CandidateSlotTemplate) -> CandidateSlot:
+        return CandidateSlot(
+            start_time=slot.start_time,
+            duration_hours=slot.duration_hours,
+            label=slot.label,
+            preference=slot.preference,
         )
 
     def _template_to_event(self, event_id: int, template: MeetingTemplate) -> CalendarEvent:
@@ -419,6 +551,10 @@ class CalendarSchedulingEnvironment:
             start_time=template.start_time,
             end_time=template.end_time,
             participants=list(template.participants),
+            movable=template.movable,
+            protected=template.protected,
+            relocation_candidates=[self._template_slot_to_model(slot) for slot in template.relocation_candidates],
+            notes=list(template.notes),
         )
 
     def _template_to_request(self, template: MeetingTemplate) -> MeetingRequest:
@@ -428,4 +564,7 @@ class CalendarSchedulingEnvironment:
             start_time=template.start_time,
             end_time=template.end_time,
             participants=list(template.participants),
+            priority=template.priority,
+            alternate_slots=[self._template_slot_to_model(slot) for slot in template.alternate_slots],
+            notes=list(template.notes),
         )

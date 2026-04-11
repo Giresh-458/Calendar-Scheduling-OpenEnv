@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from models import CalendarEvent
-from models import CalendarAction
+from models import CalendarAction, CalendarEvent
 from server.environment import CalendarSchedulingEnvironment, MAX_PUBLIC_SCORE, MIN_PUBLIC_SCORE
 from task_definitions import TASKS
 
@@ -29,11 +28,12 @@ def test_easy_task_reaches_full_score_in_one_step():
     assert result.reward > 0
 
 
-def test_medium_task_requires_conflict_resolution():
+def test_medium_task_requires_rescheduling_for_full_score():
     env = CalendarSchedulingEnvironment()
     reset_result = env.reset("task_medium")
     request = TASKS["task_medium"].requested_meetings[0]
-    blocker_id = reset_result.observation.events[0].event_id
+    blocker = reset_result.observation.events[0]
+    relocation = blocker.relocation_candidates[0]
 
     failed_attempt = env.step(
         reset_result.episode_id,
@@ -52,7 +52,12 @@ def test_medium_task_requires_conflict_resolution():
 
     env.step(
         reset_result.episode_id,
-        CalendarAction(action_type="cancel_event", event_id=blocker_id),
+        CalendarAction(
+            action_type="reschedule_event",
+            event_id=blocker.event_id,
+            new_start_time=relocation.start_time,
+            duration_hours=relocation.duration_hours,
+        ),
     )
     solved = env.step(
         reset_result.episode_id,
@@ -69,6 +74,31 @@ def test_medium_task_requires_conflict_resolution():
     assert solved.done is True
 
 
+def test_medium_task_cancelling_relocatable_blocker_loses_full_credit():
+    env = CalendarSchedulingEnvironment()
+    reset_result = env.reset("task_medium")
+    request = TASKS["task_medium"].requested_meetings[0]
+    blocker_id = reset_result.observation.events[0].event_id
+
+    env.step(
+        reset_result.episode_id,
+        CalendarAction(action_type="cancel_event", event_id=blocker_id),
+    )
+    solved = env.step(
+        reset_result.episode_id,
+        CalendarAction(
+            action_type="schedule_event",
+            title=request.title,
+            start_time=request.start_time,
+            duration_hours=request.duration_hours,
+            participants=list(request.participants),
+        ),
+    )
+
+    assert solved.observation.score < MAX_PUBLIC_SCORE
+    assert solved.done is False
+
+
 def test_hard_task_grants_partial_credit_for_one_correct_meeting():
     env = CalendarSchedulingEnvironment()
     reset_result = env.reset("task_hard")
@@ -76,10 +106,16 @@ def test_hard_task_grants_partial_credit_for_one_correct_meeting():
     blocker = next(
         event for event in reset_result.observation.events if event.start_time == first_request.start_time
     )
+    relocation = blocker.relocation_candidates[0]
 
     env.step(
         reset_result.episode_id,
-        CalendarAction(action_type="cancel_event", event_id=blocker.event_id),
+        CalendarAction(
+            action_type="reschedule_event",
+            event_id=blocker.event_id,
+            new_start_time=relocation.start_time,
+            duration_hours=relocation.duration_hours,
+        ),
     )
 
     partial = env.step(
@@ -95,6 +131,38 @@ def test_hard_task_grants_partial_credit_for_one_correct_meeting():
 
     assert partial.done is False
     assert partial.observation.score == 0.5
+
+
+def test_task_catalog_exposes_richer_metadata():
+    env = CalendarSchedulingEnvironment()
+    tasks = {task.task_id: task for task in env.list_tasks()}
+
+    assert "task_exec_dense_day" in tasks
+    assert "task_recruiting_loop" in tasks
+    assert tasks["task_medium"].supports_reschedule is True
+    assert tasks["task_exec_dense_day"].request_count == 3
+
+
+def test_state_exposes_history_and_action_metadata():
+    env = CalendarSchedulingEnvironment()
+    reset_result = env.reset("task_medium")
+    blocker = reset_result.observation.events[0]
+    relocation = blocker.relocation_candidates[0]
+
+    env.step(
+        reset_result.episode_id,
+        CalendarAction(
+            action_type="reschedule_event",
+            event_id=blocker.event_id,
+            new_start_time=relocation.start_time,
+            duration_hours=relocation.duration_hours,
+        ),
+    )
+    state = env.state(reset_result.episode_id)
+
+    assert blocker.event_id in state.movable_event_ids
+    assert state.scheduler_notes
+    assert any("Rescheduled" in entry for entry in state.history)
 
 
 def test_grader_scores_stay_strictly_inside_open_interval():

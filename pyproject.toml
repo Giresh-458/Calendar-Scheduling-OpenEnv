@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "calendar-scheduling-env"
-version = "0.1.0"
-description = "A deterministic multi-step calendar scheduling environment for OpenEnv-style workflows."
+version = "0.2.0"
+description = "A deterministic calendar coordination benchmark with protected events, fallback slots, and rescheduling."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -21,31 +21,80 @@ except ImportError:
         model_config = {"extra": "forbid"}
 
 
+class CandidateSlot(BaseModel):
+    start_time: datetime = Field(..., description="Candidate start time for a meeting or relocation.")
+    duration_hours: float = Field(..., gt=0.0, description="Duration of the candidate slot in hours.")
+    label: Optional[str] = Field(None, description="Optional human-readable label for the slot.")
+    preference: Literal["preferred", "acceptable", "fallback"] = Field(
+        "acceptable",
+        description="How desirable this slot is relative to the primary request.",
+    )
+
+    @property
+    def end_time(self) -> datetime:
+        return self.start_time + timedelta(hours=self.duration_hours)
+
+
 class CalendarEvent(BaseModel):
     event_id: int = Field(..., description="Stable identifier for an event in the current episode.")
     title: str = Field(..., description="Human-readable meeting title.")
     start_time: datetime = Field(..., description="Inclusive event start time.")
     end_time: datetime = Field(..., description="Exclusive event end time.")
     participants: List[str] = Field(default_factory=list, description="Meeting participants.")
+    movable: bool = Field(
+        True,
+        description="Whether the event may be rescheduled by the agent.",
+    )
+    protected: bool = Field(
+        False,
+        description="Whether the event is locked in place and must be preserved.",
+    )
+    relocation_candidates: List[CandidateSlot] = Field(
+        default_factory=list,
+        description="Recommended fallback slots for rescheduling this event.",
+    )
+    notes: List[str] = Field(
+        default_factory=list,
+        description="Extra hints or constraints attached to the event.",
+    )
 
 
 class MeetingRequest(BaseModel):
     request_id: str = Field(..., description="Stable identifier for a requested meeting.")
     title: str = Field(..., description="Requested meeting title.")
-    start_time: datetime = Field(..., description="Target start time.")
-    end_time: datetime = Field(..., description="Target end time.")
+    start_time: datetime = Field(..., description="Preferred start time.")
+    end_time: datetime = Field(..., description="Preferred end time.")
     participants: List[str] = Field(default_factory=list, description="Requested participants.")
+    priority: int = Field(
+        1,
+        ge=1,
+        le=5,
+        description="Relative importance of the request. Higher means more important.",
+    )
+    alternate_slots: List[CandidateSlot] = Field(
+        default_factory=list,
+        description="Acceptable fallback slots if the preferred slot is unavailable.",
+    )
+    notes: List[str] = Field(
+        default_factory=list,
+        description="Scheduling notes, preferences, or business constraints for the request.",
+    )
 
 
 class CalendarAction(Action):
-    action_type: Literal["schedule_event", "cancel_event", "noop"] = Field(
-        ..., description="The action variant to execute."
+    action_type: Literal["schedule_event", "cancel_event", "reschedule_event", "noop"] = Field(
+        ...,
+        description="The action variant to execute.",
     )
     title: Optional[str] = Field(None, description="Meeting title for schedule_event.")
     start_time: Optional[datetime] = Field(None, description="Start time for schedule_event.")
-    duration_hours: Optional[float] = Field(None, description="Duration in hours for schedule_event.")
+    new_start_time: Optional[datetime] = Field(
+        None,
+        description="New start time for reschedule_event.",
+    )
+    duration_hours: Optional[float] = Field(None, description="Duration in hours for schedule_event or reschedule_event.")
     participants: List[str] = Field(default_factory=list, description="Meeting participants.")
-    event_id: Optional[int] = Field(None, description="Event identifier for cancel_event.")
+    event_id: Optional[int] = Field(None, description="Event identifier for cancel_event or reschedule_event.")
 
     @model_validator(mode="after")
     def validate_for_action_type(self) -> "CalendarAction":
@@ -61,10 +110,25 @@ class CalendarAction(Action):
             ]
             if missing:
                 raise ValueError(f"schedule_event requires: {', '.join(missing)}")
-            if self.duration_hours is not None and self.duration_hours <= 0:
-                raise ValueError("duration_hours must be greater than 0")
+
         if self.action_type == "cancel_event" and self.event_id is None:
             raise ValueError("cancel_event requires event_id")
+
+        if self.action_type == "reschedule_event":
+            missing = [
+                field_name
+                for field_name, value in {
+                    "event_id": self.event_id,
+                    "new_start_time": self.new_start_time,
+                }.items()
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"reschedule_event requires: {', '.join(missing)}")
+
+        if self.duration_hours is not None and self.duration_hours <= 0:
+            raise ValueError("duration_hours must be greater than 0")
+
         return self
 
 
@@ -92,7 +156,7 @@ class CalendarObservation(Observation):
     task_description: str = Field(..., description="Human-readable task objective.")
     requested_meetings: List[MeetingRequest] = Field(
         default_factory=list,
-        description="Meetings that must exist in the final schedule.",
+        description="Meetings that should exist in the final schedule.",
     )
     current_time: datetime = Field(..., description="Current time reference for the agent.")
     events: List[CalendarEvent] = Field(default_factory=list, description="Current calendar state.")
@@ -115,8 +179,24 @@ class CalendarObservation(Observation):
         ...,
         description="Structured components that produced the previous scalar reward.",
     )
+    protected_event_ids: List[int] = Field(
+        default_factory=list,
+        description="IDs of events that must remain untouched.",
+    )
+    movable_event_ids: List[int] = Field(
+        default_factory=list,
+        description="IDs of events that may be rescheduled.",
+    )
+    scheduler_notes: List[str] = Field(
+        default_factory=list,
+        description="Scenario-level notes and preferences for the agent.",
+    )
+    recent_history: List[str] = Field(
+        default_factory=list,
+        description="Compact text history of the latest valid environment changes.",
+    )
     available_actions: List[str] = Field(
-        default_factory=lambda: ["schedule_event", "cancel_event", "noop"],
+        default_factory=lambda: ["schedule_event", "cancel_event", "reschedule_event", "noop"],
         description="Action types supported by the environment.",
     )
 
@@ -145,6 +225,22 @@ class CalendarState(State):
     done: bool = Field(..., description="Whether the episode has ended.")
     created_at: datetime = Field(..., description="Episode creation time.")
     current_time: datetime = Field(..., description="Current environment time.")
+    protected_event_ids: List[int] = Field(
+        default_factory=list,
+        description="IDs of events that must remain untouched.",
+    )
+    movable_event_ids: List[int] = Field(
+        default_factory=list,
+        description="IDs of events that may be rescheduled.",
+    )
+    scheduler_notes: List[str] = Field(
+        default_factory=list,
+        description="Scenario-level notes and preferences for the active task.",
+    )
+    history: List[str] = Field(
+        default_factory=list,
+        description="Compact text history of valid environment changes.",
+    )
     events: List[CalendarEvent] = Field(default_factory=list, description="Current calendar state.")
 
 
@@ -154,6 +250,9 @@ class TaskSummary(BaseModel):
     difficulty: Literal["easy", "medium", "hard"]
     description: str
     max_steps: int
+    scenario_type: str
+    request_count: int
+    supports_reschedule: bool
 
 
 class ResetRequest(BaseModel):
