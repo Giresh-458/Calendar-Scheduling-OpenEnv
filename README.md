@@ -16,67 +16,28 @@ tags:
 
 This repository provides a deterministic OpenEnv-compatible calendar coordination benchmark. Instead of only testing whether an agent can place one meeting, it evaluates whether the agent can preserve protected anchors, reschedule movable blockers, respect preferred time slots, and avoid destructive edits when solving a realistic day-planning problem.
 
-The server exposes a Gym-style interaction loop over HTTP:
+The server exposes a Gym-style interaction loop over HTTP.
 
-- `POST /reset`
-- `POST /step`
-- `GET /state`
-- `GET /tasks`
-- `POST /grader`
-- `GET /health`
+## Features
 
-## Why This Version Is Stronger
-
-Compared with a toy scheduling demo, this benchmark now includes:
-
-- protected anchor events that must remain intact
-- movable internal meetings with approved relocation candidates
-- preferred slots plus acceptable fallback slots for requested meetings
-- denser grading that rewards good calendar stewardship, not just end-state matching
-- five deterministic scenarios across team coordination, executive assistance, customer work, recruiting, and project management
-- a deterministic baseline policy that solves every included task to the maximum public score
+Compared to a basic scheduling demo, this benchmark includes:
+- Protected anchor events that must remain intact.
+- Movable internal meetings with approved relocation candidates.
+- Preferred slots plus acceptable fallback slots for requested meetings.
+- Dense grading that rewards good calendar stewardship, not just end-state matching.
+- Five deterministic scenarios (team coordination, executive assistance, customer work, recruiting, project management).
+- A deterministic baseline policy that solves every included task to the maximum score.
 
 ## Task Catalog
 
 The environment ships with five deterministic tasks:
-
 - `task_easy`: schedule one clean meeting into an empty calendar
 - `task_medium`: move a blocker to its approved fallback slot, then place the customer review
 - `task_hard`: preserve protected anchors while coordinating two back-to-back meetings
 - `task_exec_dense_day`: coordinate three executive requests around focus, lunch, and board-read anchors
 - `task_recruiting_loop`: protect recruiting anchors while scheduling a candidate panel and debrief
 
-`GET /tasks` returns richer metadata for each task, including:
-
-- `scenario_type`
-- `request_count`
-- `supports_reschedule`
-
-## Project Layout
-
-```text
-.
-|-- Dockerfile
-|-- README.md
-|-- client.py
-|-- inference.py
-|-- models.py
-|-- openenv.yaml
-|-- pyproject.toml
-|-- requirements.txt
-|-- scripts/
-|   `-- validate-submission.sh
-|-- task_definitions.py
-|-- tests/
-|   |-- test_environment.py
-|   |-- test_grader_guards.py
-|   |-- test_inference_logging.py
-|   `-- test_inference_policy.py
-`-- server/
-    |-- __init__.py
-    |-- app.py
-    `-- environment.py
-```
+`GET /tasks` returns richer metadata for each task, including `scenario_type`, `request_count`, and `supports_reschedule`.
 
 ## Quick Start
 
@@ -84,7 +45,7 @@ The environment ships with five deterministic tasks:
 
 ```bash
 python -m venv .venv
-. .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
@@ -98,7 +59,6 @@ openenv validate
 ```
 
 Optional pre-submission validator:
-
 ```bash
 bash scripts/validate-submission.sh https://your-space-name.hf.space .
 ```
@@ -112,7 +72,6 @@ curl http://localhost:8000/health
 ```
 
 Expected health response:
-
 ```json
 {"status":"healthy","service":"calendar-scheduling-env"}
 ```
@@ -120,42 +79,22 @@ Expected health response:
 ## Environment Model
 
 ### Observation
-
 Each step returns a structured observation with:
-
-- current task metadata and requested meetings
-- current calendar state with `movable`, `protected`, and `relocation_candidates`
-- protected and movable event IDs for quick policy use
-- scheduler notes describing the scenario constraints
-- recent action history
-- current step, score, reward, and feedback
-
-Key observation fields:
-
-- `task_id`, `task_name`, `task_description`
-- `requested_meetings`
-- `current_time`
-- `events`
-- `protected_event_ids`, `movable_event_ids`
-- `scheduler_notes`, `recent_history`
-- `step`, `max_steps`, `done`
-- `feedback`, `last_action_error`
-- `score`, `last_reward`, `reward_breakdown`
-- `available_actions`
+- Current task metadata and requested meetings
+- Current calendar state with `movable`, `protected`, and `relocation_candidates`
+- Protected and movable event IDs for quick policy use
+- Scheduler notes describing the scenario constraints
+- Recent action history
+- Current step, score, reward, and feedback
 
 ### Actions
-
 Supported actions:
-
 - `schedule_event`
 - `cancel_event`
-- `reschedule_event`
+- `reschedule_event` (Lets an agent preserve internal meetings by moving them to approved fallback slots instead of deleting them)
 - `noop`
 
-`reschedule_event` is the key addition in this version. It lets an agent preserve internal meetings by moving them to approved fallback slots instead of deleting them.
-
 Example `schedule_event` payload:
-
 ```json
 {
   "episode_id": "your-episode-id",
@@ -170,7 +109,6 @@ Example `schedule_event` payload:
 ```
 
 Example `reschedule_event` payload:
-
 ```json
 {
   "episode_id": "your-episode-id",
@@ -186,120 +124,48 @@ Example `reschedule_event` payload:
 ## Grading and Rewards
 
 The grader combines end-state correctness with schedule quality:
+- Full credit requires requested meetings in their preferred slots.
+- Acceptable fallback slots earn strong partial credit.
+- Protected anchors must remain intact.
+- Movable blockers that have approved fallback slots should be preserved by rescheduling.
+- Overlapping events reduce the final score.
 
-- full credit requires requested meetings in their preferred slots
-- acceptable fallback slots earn strong partial credit
-- protected anchors must remain intact
-- movable blockers that have approved fallback slots should be preserved by rescheduling
-- overlapping events reduce the final score
+Scores are normalized into the open interval `(0, 1)` (floor: `0.001`, ceiling: `0.999`). The environment also exposes dense reward shaping on every step (step penalties, progress rewards, destructive action penalties, and completion bonuses).
 
-The environment also exposes dense reward shaping on every step:
+## API Endpoints
 
-- small step penalty for efficiency
-- progress reward when the deterministic grader improves
-- invalid action penalties for rejected operations
-- destructive action penalty for cancellations
-- completion bonus on a perfect solve
-
-Scores are always normalized into the open interval `(0, 1)`:
-
-- unsolved floor: `0.001`
-- solved ceiling: `0.999`
-
-## Endpoints
-
-### `GET /tasks`
-
-Returns the task catalog and scenario metadata.
-
-### `POST /reset`
-
-Starts a new episode.
-
-Request:
-
-```json
-{
-  "task_id": "task_exec_dense_day"
-}
-```
-
-### `POST /step`
-
-Applies one typed action to an existing episode.
-
-### `GET /state?episode_id=<id>`
-
-Returns the current internal episode state.
-
-### `POST /grader`
-
-Grades either:
-
-- a live episode by `episode_id`, or
-- an explicit `{task_id, events}` payload
-
-### `GET /metadata`
-
-Returns environment metadata plus the repository README contents.
-
-### `GET /schema`
-
-Returns the action, observation, state, and task-summary JSON schemas.
+| Endpoint | Method | Description |
+|---|---|---|
+| `/tasks` | `GET` | Returns the task catalog and scenario metadata. |
+| `/reset` | `POST` | Starts a new episode. Pass `{"task_id": "task_id"}` in payload. |
+| `/step` | `POST` | Applies one typed action to an existing episode. |
+| `/state` | `GET` | Returns the current internal episode state (`?episode_id=<id>`). |
+| `/grader` | `POST` | Grades a live episode by `episode_id`, or an explicit `{task_id, events}` payload. |
+| `/metadata`| `GET` | Returns environment metadata plus the repository README contents. |
+| `/schema` | `GET` | Returns the action, observation, state, and task-summary JSON schemas. |
 
 ## Baseline Inference Script
 
 `inference.py` includes a deterministic safety-first policy that:
-
-- keeps protected anchors intact
-- reschedules movable blockers into approved fallback slots when possible
-- cancels only when a clean relocation is unavailable
-- prefers the highest-priority request and preferred slot first
-
-The script prints only the required structured stdout lines:
-
-```text
-[START] task=<task_id> env=<benchmark> model=<model_name>
-[STEP] step=<n> action=<json_action> reward=<0.00> done=<true|false> error=<msg|null>
-[END] success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
-```
+- Keeps protected anchors intact.
+- Reschedules movable blockers into approved fallback slots when possible.
+- Cancels only when a clean relocation is unavailable.
+- Prefers the highest-priority request and preferred slot first.
 
 For local reproducibility, the script defaults to an embedded in-process environment when `ENV_BASE_URL` is not set. If `ENV_BASE_URL` is provided, it targets the running HTTP server or deployed HF Space instead.
 
-Optional environment variables:
-
-- `ENV_BASE_URL`
-- `TASK_IDS`
-- `MAX_AGENT_STEPS`
-- `BENCHMARK_NAME`
-- `SUCCESS_SCORE_THRESHOLD`
-- `API_BASE_URL`
-- `MODEL_NAME`
-- `HF_TOKEN`
-
-### Reference Baseline Scores
-
 With the embedded deterministic policy, all included tasks reach `0.999`.
 
-## Hugging Face Space Deployment
+## Deployment (Hugging Face Spaces)
 
-1. Create a new Hugging Face Space using the `Docker` SDK.
+1. Create a new Hugging Face Space using the Docker SDK.
 2. Push this repository to the Space repository root.
 3. Keep `README.md`, `Dockerfile`, and `openenv.yaml` at the repo root.
-4. Wait for the build to finish, then verify:
-   `GET /health`, `GET /tasks`, and `POST /reset`.
+4. Wait for the build to finish, then verify `/health`, `/tasks`, and `/reset`.
 
 ## Tests
 
-The test suite now covers:
-
-- full-score solves for the easy and richer multi-step tasks
-- guardrails that prevent full credit after destructive blocker deletion
-- score-range checks across all API payloads
-- structured inference logging
-- deterministic baseline policy success across the full task catalog
-
-Run:
+The test suite covers full-score solves, guardrails, score-range checks, and deterministic baseline success across the catalog. 
 
 ```bash
 pytest
